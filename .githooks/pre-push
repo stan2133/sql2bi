@@ -6,9 +6,8 @@ cd "$ROOT_DIR"
 
 "$ROOT_DIR/.githooks/pre-commit"
 
-if ! command -v python3.11 >/dev/null 2>&1; then
-  echo "[pre-push] python3.11 is required. Install it before push." >&2
-  echo "[pre-push] See skills/sql-to-bi-builder/references/install_python311.md" >&2
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "[pre-push] python3 is required for smoke checks." >&2
   exit 1
 fi
 
@@ -20,9 +19,21 @@ fi
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/sql2bi-prepush.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
 
-python3.11 "$ROOT_DIR/skills/sql-to-bi-builder/scripts/run_pipeline.py" \
+python3 "$ROOT_DIR/skills/sql-to-bi-builder/scripts/parse_sql_md.py" \
   --input "$ROOT_DIR/sample.sql.md" \
-  --out "$tmp_dir/out"
+  --output "$tmp_dir/out/query_catalog.json"
+python3 "$ROOT_DIR/skills/sql-to-bi-builder/scripts/infer_semantics.py" \
+  --input "$tmp_dir/out/query_catalog.json" \
+  --output "$tmp_dir/out/semantic_catalog.json"
+python3 "$ROOT_DIR/skills/sql-to-bi-builder/scripts/recommend_chart.py" \
+  --input "$tmp_dir/out/semantic_catalog.json" \
+  --query-catalog "$tmp_dir/out/query_catalog.json" \
+  --output "$tmp_dir/out/chart_plan.json"
+python3 "$ROOT_DIR/skills/sql-to-bi-builder/scripts/build_dashboard_spec.py" \
+  --queries "$tmp_dir/out/query_catalog.json" \
+  --semantics "$tmp_dir/out/semantic_catalog.json" \
+  --charts "$tmp_dir/out/chart_plan.json" \
+  --output "$tmp_dir/out/dashboard.json"
 
 for f in query_catalog.json semantic_catalog.json chart_plan.json dashboard.json; do
   if [[ ! -f "$tmp_dir/out/$f" ]]; then

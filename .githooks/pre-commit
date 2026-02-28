@@ -25,4 +25,6 @@ if [[ ${#py_files[@]} -gt 0 ]]; then
   python3 -m py_compile "${py_files[@]}"
 fi
 
+bash scripts/check-requirements-version.sh
+
 echo "[pre-commit] checks passed"
