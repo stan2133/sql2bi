@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+
+# Build/Test
+.pytest_cache/
+.mypy_cache/
+
+# uv
+.uv/
+
+# Local outputs
+out/
+*.log
+
+# OS
+.DS_Store
+
+# Editor
+.idea/
+.vscode/

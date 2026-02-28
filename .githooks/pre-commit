@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+cd "$ROOT_DIR"
+
+# Prevent committing unresolved merge markers.
+if rg -n "^(<<<<<<<|=======|>>>>>>>)" --glob '!*.lock' >/dev/null 2>&1; then
+  echo "[pre-commit] Found unresolved merge conflict markers." >&2
+  exit 1
+fi
+
+# Validate shell script syntax.
+while IFS= read -r sh_file; do
+  bash -n "$sh_file"
+done < <(find . -type f -name '*.sh' -not -path './.git/*' | sort)
+
+# Validate Python syntax for skill scripts.
+py_files=()
+while IFS= read -r py_file; do
+  py_files+=("$py_file")
+done < <(find skills/sql-to-bi-builder/scripts -type f -name '*.py' | sort)
+
+if [[ ${#py_files[@]} -gt 0 ]]; then
+  python3 -m py_compile "${py_files[@]}"
+fi
+
+echo "[pre-commit] checks passed"

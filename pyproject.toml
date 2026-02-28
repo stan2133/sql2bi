@@ -1,0 +1,14 @@
+[project]
+name = "sql2bi-skill-workspace"
+version = "0.1.0"
+description = "Workspace for sql-to-bi-builder skill"
+requires-python = ">=3.11,<3.12"
+dependencies = []
+
+[project.optional-dependencies]
+dev = [
+  "PyYAML>=6.0",
+]
+
+[tool.setuptools]
+py-modules = []

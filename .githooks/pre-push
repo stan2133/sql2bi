@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(git rev-parse --show-toplevel)"
+cd "$ROOT_DIR"
+
+"$ROOT_DIR/.githooks/pre-commit"
+
+if ! command -v python3.11 >/dev/null 2>&1; then
+  echo "[pre-push] python3.11 is required. Install it before push." >&2
+  echo "[pre-push] See skills/sql-to-bi-builder/references/install_python311.md" >&2
+  exit 1
+fi
+
+if [[ ! -f "$ROOT_DIR/sample.sql.md" ]]; then
+  echo "[pre-push] sample.sql.md not found; cannot run smoke pipeline." >&2
+  exit 1
+fi
+
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/sql2bi-prepush.XXXXXX")"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+python3.11 "$ROOT_DIR/skills/sql-to-bi-builder/scripts/run_pipeline.py" \
+  --input "$ROOT_DIR/sample.sql.md" \
+  --out "$tmp_dir/out"
+
+for f in query_catalog.json semantic_catalog.json chart_plan.json dashboard.json; do
+  if [[ ! -f "$tmp_dir/out/$f" ]]; then
+    echo "[pre-push] Missing smoke output: $f" >&2
+    exit 1
+  fi
+done
+
+echo "[pre-push] checks passed"
