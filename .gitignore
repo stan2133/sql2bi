@@ -19,6 +19,9 @@ services/backend/.venv/
 services/backend/data/artifacts/
 services/backend/data/*.duckdb
 services/backend/data/state.json
+services/frontend/node_modules/
+services/frontend/dist/
+services/frontend/.vite/
 
 # OS
 .DS_Store
