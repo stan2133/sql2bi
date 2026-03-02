@@ -15,6 +15,10 @@ __pycache__/
 # Local outputs
 out/
 *.log
+services/backend/.venv/
+services/backend/data/artifacts/
+services/backend/data/*.duckdb
+services/backend/data/state.json
 
 # OS
 .DS_Store
