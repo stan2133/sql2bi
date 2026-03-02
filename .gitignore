@@ -19,6 +19,7 @@ services/backend/.venv/
 services/backend/data/artifacts/
 services/backend/data/*.duckdb
 services/backend/data/state.json
+services/backend/data/state_lite.json
 services/frontend/node_modules/
 services/frontend/dist/
 services/frontend/.vite/

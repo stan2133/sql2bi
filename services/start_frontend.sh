@@ -2,10 +2,15 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-cd "$ROOT/frontend"
+FRONTEND_HOST="${FRONTEND_HOST:-127.0.0.1}"
+FRONTEND_PORT="${FRONTEND_PORT:-15173}"
 
-if [[ ! -d node_modules ]]; then
-  npm install
+if [[ -d "$ROOT/frontend/node_modules" ]]; then
+  cd "$ROOT/frontend"
+  npm run dev -- --host "$FRONTEND_HOST" --port "$FRONTEND_PORT"
+  exit 0
 fi
 
-npm run dev -- --host 127.0.0.1 --port 5173
+echo "[frontend] node_modules not found, using lite frontend on ${FRONTEND_HOST}:${FRONTEND_PORT}"
+cd "$ROOT/frontend-lite"
+FRONTEND_HOST="$FRONTEND_HOST" FRONTEND_PORT="$FRONTEND_PORT" python3 server.py

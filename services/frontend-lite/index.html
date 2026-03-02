@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>SQL2BI Frontend Lite</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">SQL2BI Frontend Lite</div>
+    <div class="controls">
+      <label for="backend">Backend</label>
+      <input id="backend" />
+      <label for="sqlmd">sql.md</label>
+      <input id="sqlmd" />
+      <button id="importBtn">Import</button>
+      <button id="reloadBtn">Reload</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <aside class="panel">
+      <h2>Global Filters</h2>
+      <div id="globalFilters"></div>
+    </aside>
+    <main class="main">
+      <h1 id="title">Loading...</h1>
+      <div id="grid" class="grid"></div>
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

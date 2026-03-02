@@ -10,7 +10,7 @@ import type {
   WidgetSpec
 } from './types'
 
-const DEFAULT_BACKEND_URL = 'http://127.0.0.1:8000'
+const DEFAULT_BACKEND_URL = 'http://127.0.0.1:18000'
 const DEFAULT_SQL_MD_PATH = '/Users/lyg/software/sql2bi/sample.sql.md'
 
 type WidgetCardProps = {

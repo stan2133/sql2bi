@@ -4,11 +4,20 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT/backend"
 
-if [[ ! -d .venv ]]; then
-  python3 -m venv .venv
-fi
+BACKEND_HOST="${BACKEND_HOST:-127.0.0.1}"
+BACKEND_PORT="${BACKEND_PORT:-18000}"
 
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-bash run.sh
+if python3 - <<'PY' >/dev/null 2>&1
+import fastapi  # noqa: F401
+import uvicorn  # noqa: F401
+import duckdb   # noqa: F401
+import polars   # noqa: F401
+import pandas   # noqa: F401
+PY
+then
+  echo "[backend] using full mode (fastapi + duckdb + polars/pandas) on ${BACKEND_HOST}:${BACKEND_PORT}"
+  BACKEND_HOST="$BACKEND_HOST" BACKEND_PORT="$BACKEND_PORT" bash run.sh
+else
+  echo "[backend] full dependencies unavailable, using lite mode on ${BACKEND_HOST}:${BACKEND_PORT}"
+  python3 app_lite.py --host "$BACKEND_HOST" --port "$BACKEND_PORT"
+fi
