@@ -6,8 +6,8 @@ description: Convert a markdown file containing SQL queries (for example `sql.md
 # SQL To BI Builder
 
 ## Overview
-Use this skill to transform `sql.md` query collections into a working BI prototype in a deterministic pipeline.
-Prefer the provided scripts over ad-hoc rewriting so output formats stay stable across runs.
+Use this skill to transform `sql.md` query collections into a service-based BI prototype.
+This skill must generate both backend and frontend services from SQL-derived artifacts.
 
 ## Workflow
 1. Parse markdown SQL blocks into a normalized query catalog.
@@ -16,6 +16,7 @@ Prefer the provided scripts over ad-hoc rewriting so output formats stay stable 
 4. Recommend chart types from inferred semantics.
 5. Build a dashboard specification with layout coordinates.
 6. Generate a UI scaffold that renders the dashboard structure.
+7. Generate service bundle (`services/backend` + `services/frontend`) that depends on generated SQL artifacts.
 
 ## Input Contract
 Expect one markdown file with one or more SQL fenced blocks.
@@ -72,12 +73,13 @@ bash scripts/setup_venv.sh --with-dev
 ```
 
 ## Run Commands
-After activating `.venv`, run pipeline:
+After activating `.venv`, run pipeline and service generation:
 
 ```bash
 python scripts/run_pipeline.py \
   --input /abs/path/sql.md \
-  --out /abs/path/out
+  --out /abs/path/out \
+  --with-services
 ```
 
 Run each step separately when debugging:
@@ -88,6 +90,14 @@ python scripts/infer_semantics.py --input /abs/path/out/query_catalog.json --out
 python scripts/recommend_chart.py --input /abs/path/out/semantic_catalog.json --output /abs/path/out/chart_plan.json
 python scripts/build_dashboard_spec.py --queries /abs/path/out/query_catalog.json --semantics /abs/path/out/semantic_catalog.json --charts /abs/path/out/chart_plan.json --output /abs/path/out/dashboard.json
 python scripts/generate_ui_scaffold.py --dashboard /abs/path/out/dashboard.json --out /abs/path/out/ui
+python scripts/generate_service_bundle.py --artifacts /abs/path/out --output /abs/path/out/services
+```
+
+Start generated services:
+
+```bash
+bash /abs/path/out/services/start_backend.sh
+bash /abs/path/out/services/start_frontend.sh
 ```
 
 ## Runtime And Version Control
@@ -106,6 +116,9 @@ python scripts/generate_ui_scaffold.py --dashboard /abs/path/out/dashboard.json 
 - `chart_plan.json`: Recommended chart type per query.
 - `dashboard.json`: Final dashboard definition for rendering, including page-level `global_filters`.
 - `ui/`: Static UI scaffold (`index.html`, `app.js`, `style.css`).
+- `services/backend`: FastAPI backend service using generated artifacts.
+- `services/frontend`: Frontend service consuming backend API.
+- `services/start_backend.sh` and `services/start_frontend.sh`: service start scripts.
 
 ## Heuristic References
 Load only the file needed for the current issue:

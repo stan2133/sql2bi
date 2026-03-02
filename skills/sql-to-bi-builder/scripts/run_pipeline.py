@@ -21,6 +21,11 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Run SQL->BI pipeline")
     parser.add_argument("--input", required=True, help="Path to sql.md")
     parser.add_argument("--out", required=True, help="Output directory")
+    parser.add_argument(
+        "--with-services",
+        action="store_true",
+        help="Also generate backend/frontend service bundle under <out>/services",
+    )
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent
@@ -60,6 +65,17 @@ def main() -> None:
         str(dashboard),
     ])
     run_step([py, str(root / "generate_ui_scaffold.py"), "--dashboard", str(dashboard), "--out", str(ui_dir)])
+
+    if args.with_services:
+        services_dir = out / "services"
+        run_step([
+            py,
+            str(root / "generate_service_bundle.py"),
+            "--artifacts",
+            str(out),
+            "--output",
+            str(services_dir),
+        ])
 
     print(f"Pipeline completed. Output at {out}")
 
