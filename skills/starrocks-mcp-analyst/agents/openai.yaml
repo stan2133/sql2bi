@@ -1,0 +1,4 @@
+interface:
+  display_name: "StarRocks MCP Analyst"
+  short_description: "Run end-to-end data analysis via StarRocks MCP"
+  default_prompt: "Use this skill to perform data analysis on StarRocks through MCP: inspect schema, build SQL, validate results, and deliver insights."
