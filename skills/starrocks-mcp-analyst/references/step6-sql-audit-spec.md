@@ -31,6 +31,20 @@ Only switch to another language when user explicitly requests it.
 6. Persist full executed SQL artifacts to session audit directory.
 7. Aggregate severity and produce gate decision.
 
+## SQL 落盘强制策略（Blocking）
+落盘不是建议项，是强制项。
+
+执行每条查询后，必须同步完成：
+1. 写入 `audit/<session_id>/sql/<query_id>.sql`（完整 SQL）
+2. 在 `audit/<session_id>/sql.md` 追加本次执行记录
+3. 记录参数、耗时、行数、状态
+
+若任一步骤失败：
+- 当前查询标记 `FAIL`
+- 生成 violation：`category=artifact`, `severity=critical`
+- `sql_audit` 直接置为 `FAIL`
+- 停止 Step 7 最终发布
+
 ## Session-Based Audit Directory (Required)
 Audit outputs must be persisted by session, not ad hoc run folder.
 
@@ -69,6 +83,7 @@ Failure severity:
 - forbidden keyword -> `critical`
 - no bounded time -> `high`
 - select star in core query -> `high`
+- SQL artifact persistence failure -> `critical`
 
 ## 2) Semantic Consistency Checks
 Validate query logic against Step 2 contract:
@@ -145,6 +160,7 @@ When `FAIL`:
 - block Step 7 final insight publishing
 - return only verified partial findings
 - provide explicit remediation SQL/checklist
+- if caused by persistence failure, require re-run with successful artifact writes
 
 When `WARN`:
 - publish with confidence cap
@@ -178,6 +194,7 @@ Language rule:
 
 Template reference:
 - `references/audit-sql-md-template.md`
+- `references/sql-audit-persistence-summary.md`
 
 ## Output Template
 ```json
@@ -189,7 +206,8 @@ Template reference:
       "total_queries": 0,
       "pass_queries": 0,
       "warn_queries": 0,
-      "fail_queries": 0
+      "fail_queries": 0,
+      "persisted_queries": 0
     },
     "violations": [
       {
@@ -210,7 +228,8 @@ Template reference:
           "semantic": "PASS|WARN|FAIL",
           "integrity": "PASS|WARN|FAIL",
           "reconcile": "PASS|WARN|FAIL",
-          "performance": "PASS|WARN|FAIL"
+          "performance": "PASS|WARN|FAIL",
+          "persistence": "PASS|WARN|FAIL"
         },
         "violations": [],
         "remediation_hint": ""
@@ -237,7 +256,8 @@ Template reference:
       "total_queries": 8,
       "pass_queries": 6,
       "warn_queries": 2,
-      "fail_queries": 0
+      "fail_queries": 0,
+      "persisted_queries": 8
     },
     "violations": [
       {

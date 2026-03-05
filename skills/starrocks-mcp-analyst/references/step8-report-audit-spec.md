@@ -9,6 +9,11 @@ Step 8 是发布闸门，不是可选步骤。
 - `sql_audit_report`（Step 6）
 - `audit/<session_id>/sql.md`
 - `audit/<session_id>/sql/*.sql`
+- `reports/<theme>/<version>/report.md`
+- `reports/<theme>/<version>/analysis_trace.md`
+- `reports/<theme>/<version>/report.json`
+- `reports/<theme>/<version>/evidence_index.json`
+- `reports/<theme>/<version>/metadata.json`
 
 ## 输出
 - `report_audit_report`
@@ -26,6 +31,7 @@ Step 8 是发布闸门，不是可选步骤。
 4. 建议动作一致性审计
 5. 风险与不确定性审计
 6. 审计产物完整性审计
+7. 报告版本与主题归档审计
 
 ## 1) 证据可追溯审计
 必检项：
@@ -89,6 +95,19 @@ audit/<session_id>/
 
 失败条件：
 - `sql.md` 不存在或缺少完整 SQL -> `critical`
+- 报告引用的任一 `query_id` 未落盘 -> `critical`
+
+## 7) 报告版本与主题归档审计
+必检项：
+- 报告已保存到 `reports/<theme>/<version>/`
+- `theme` 不为空且符合 slug 规则（小写+短横线）
+- `version` 不为空且符合 `vYYYYMMDD.NNN`
+- `metadata.json` 中 `session_id` 与审计目录一致
+- `evidence_index.json` 中 `finding_id -> query_id` 可映射到 `audit/<session_id>/sql.md`
+
+失败条件：
+- 未按 `theme + version` 落盘 -> `critical`
+- 映射关系不完整 -> `high`
 
 ## 严重性与门禁规则
 严重性分级：
@@ -125,7 +144,8 @@ audit/<session_id>/
       "disclosure": "PASS|WARN|FAIL",
       "action_alignment": "PASS|WARN|FAIL",
       "risk_alignment": "PASS|WARN|FAIL",
-      "artifact_completeness": "PASS|WARN|FAIL"
+      "artifact_completeness": "PASS|WARN|FAIL",
+      "theme_version_storage": "PASS|WARN|FAIL"
     },
     "violations": [
       {
@@ -140,7 +160,13 @@ audit/<session_id>/
     "artifacts": {
       "sql_md_path": "audit/<session_id>/sql.md",
       "sql_dir_path": "audit/<session_id>/sql",
-      "sql_audit_report_path": "audit/<session_id>/sql_audit_report.json"
+      "sql_audit_report_path": "audit/<session_id>/sql_audit_report.json",
+      "report_root": "reports/<theme>/<version>",
+      "report_md_path": "reports/<theme>/<version>/report.md",
+      "analysis_trace_path": "reports/<theme>/<version>/analysis_trace.md",
+      "report_json_path": "reports/<theme>/<version>/report.json",
+      "evidence_index_path": "reports/<theme>/<version>/evidence_index.json",
+      "metadata_path": "reports/<theme>/<version>/metadata.json"
     },
     "residual_risks": [],
     "publish_policy": "block_final|allow_with_warning|allow"
@@ -162,7 +188,8 @@ audit/<session_id>/
       "disclosure": "WARN",
       "action_alignment": "PASS",
       "risk_alignment": "WARN",
-      "artifact_completeness": "PASS"
+      "artifact_completeness": "PASS",
+      "theme_version_storage": "PASS"
     },
     "violations": [
       {
@@ -177,7 +204,13 @@ audit/<session_id>/
     "artifacts": {
       "sql_md_path": "audit/session_20260305_001/sql.md",
       "sql_dir_path": "audit/session_20260305_001/sql",
-      "sql_audit_report_path": "audit/session_20260305_001/sql_audit_report.json"
+      "sql_audit_report_path": "audit/session_20260305_001/sql_audit_report.json",
+      "report_root": "reports/growth-acquisition/v20260305.001",
+      "report_md_path": "reports/growth-acquisition/v20260305.001/report.md",
+      "analysis_trace_path": "reports/growth-acquisition/v20260305.001/analysis_trace.md",
+      "report_json_path": "reports/growth-acquisition/v20260305.001/report.json",
+      "evidence_index_path": "reports/growth-acquisition/v20260305.001/evidence_index.json",
+      "metadata_path": "reports/growth-acquisition/v20260305.001/metadata.json"
     },
     "residual_risks": ["近24小时归因数据仍在回补，结论置信度上限为 medium"],
     "publish_policy": "allow_with_warning"

@@ -16,6 +16,24 @@ Ensure each conclusion is backed by reproducible SQL, quality checks, and explic
 - Run SQL audit and report audit before final conclusions.
 - Keep all claims traceable to query IDs and parameters.
 
+## Mandatory SQL Audit Persistence
+Treat SQL persistence as a hard gate for publishing.
+
+Hard requirements:
+1. Every executed SQL must be saved to local file:
+   - `audit/<session_id>/sql/<query_id>.sql`
+2. Every executed SQL must be registered in:
+   - `audit/<session_id>/sql.md`
+3. `sql.md` must include:
+   - `query_id`, status, execution time, runtime, row count, parameters, and full SQL text
+4. If execution succeeds but persistence fails:
+   - set `sql_audit=FAIL`
+   - block Step 7 and Step 8 final publish
+5. Audit narrative defaults to Chinese (`zh-CN`) unless user explicitly requests otherwise.
+
+Reference:
+- `references/sql-audit-persistence-summary.md`
+
 ## End-To-End Workflow
 1. Build the decision card.
 2. Load business knowledge and metric semantics.
@@ -151,6 +169,7 @@ If a critical check fails:
 - report blockers and safe next actions
 - persist executed SQL artifacts to session audit directory (`audit/<session_id>/sql.md` + per-query `.sql`)
 - output audit summary and violation descriptions in Chinese (`zh-CN`)
+- treat SQL persistence as blocking gate: no persisted SQL => `sql_audit=FAIL` and stop Step 7 publish
 
 Execution checklist:
 - `references/mcp_execution_checklist.md`
@@ -169,9 +188,13 @@ For each key finding, output:
 - numeric evidence
 - estimated impact
 - confidence level (`high`/`medium`/`low`)
+- analysis reasoning trace from question to conclusion
+- local report artifact path saved by `theme + version`
 
 Reference:
 - `references/step7-insight-impact-spec.md`
+- `references/step7-report-writing-spec.md`
+- `references/report-storage-spec.md`
 
 ## Step 8: Run Report Audit Checks
 Before final output, enforce:
@@ -184,6 +207,7 @@ Return a final audit summary:
 - `sql_audit`: `PASS` | `WARN` | `FAIL`
 - `report_audit`: `PASS` | `WARN` | `FAIL`
 - `residual_risks`: list
+- report storage validation: `reports/<theme>/<version>/...`
 
 Reference:
 - `references/step8-report-audit-spec.md`

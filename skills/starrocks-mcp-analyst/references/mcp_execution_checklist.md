@@ -35,3 +35,4 @@
 - List caveats and missing capabilities explicitly.
 - Persist full executed SQL to `audit/<session_id>/sql.md` for human escalation.
 - Write audit narrative content in Chinese (`zh-CN`) by default.
+- Enforce fail-fast: if SQL cannot be persisted to disk, stop workflow and mark audit as `FAIL`.

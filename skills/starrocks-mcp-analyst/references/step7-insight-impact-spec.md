@@ -14,12 +14,14 @@ Convert audited SQL outputs into decision-ready findings, quantified impact, and
 ## Output
 - `insight_package`
 - finding-level confidence and action priority
+- local report artifacts under `reports/<theme>/<version>/`
 
 ## Entry Gate
 Step 7 can publish final insights only when:
 - Step 6 `sql_audit` is `PASS` or `WARN`
 - every finding references at least one `PASS|WARN` query audit
 - `audit/<session_id>/sql.md` is present and complete
+- report storage target is resolved (`theme` + `version`)
 
 Language alignment:
 - keep insight report language consistent with audit package language
@@ -36,6 +38,7 @@ If Step 6 is `FAIL`:
 4. Generate recommendation candidates.
 5. Rank actions by impact and execution feasibility.
 6. Produce final narrative with explicit uncertainty.
+7. Persist report artifacts by `theme + version`.
 
 ## Finding Construction Rules
 Each finding must include:
@@ -128,6 +131,16 @@ Language policy:
 - avoid overstating certainty
 - separate fact and interpretation
 
+Required artifact outputs:
+- `report.md` (business narrative)
+- `analysis_trace.md` (analysis reasoning chain)
+- `report.json` (structured payload)
+- `evidence_index.json` (finding-to-query mapping)
+
+Storage convention:
+- `reports/<theme>/<version>/...`
+- theme/version rules from `references/report-storage-spec.md`
+
 ## Output Template
 ```json
 {
@@ -183,6 +196,14 @@ Language policy:
       "session_id": "",
       "sql_md_path": "audit/<session_id>/sql.md",
       "sql_dir_path": "audit/<session_id>/sql"
+    },
+    "report_artifacts": {
+      "theme": "",
+      "version": "",
+      "report_md_path": "reports/<theme>/<version>/report.md",
+      "analysis_trace_path": "reports/<theme>/<version>/analysis_trace.md",
+      "report_json_path": "reports/<theme>/<version>/report.json",
+      "evidence_index_path": "reports/<theme>/<version>/evidence_index.json"
     },
     "residual_risks": [],
     "next_checks": []
@@ -245,6 +266,14 @@ Language policy:
       "session_id": "session_20260305_001",
       "sql_md_path": "audit/session_20260305_001/sql.md",
       "sql_dir_path": "audit/session_20260305_001/sql"
+    },
+    "report_artifacts": {
+      "theme": "growth-acquisition",
+      "version": "v20260305.001",
+      "report_md_path": "reports/growth-acquisition/v20260305.001/report.md",
+      "analysis_trace_path": "reports/growth-acquisition/v20260305.001/analysis_trace.md",
+      "report_json_path": "reports/growth-acquisition/v20260305.001/report.json",
+      "evidence_index_path": "reports/growth-acquisition/v20260305.001/evidence_index.json"
     },
     "residual_risks": ["model-based attribution not fully backfilled"],
     "next_checks": ["re-evaluate lift after 7 days with finalized attribution"]

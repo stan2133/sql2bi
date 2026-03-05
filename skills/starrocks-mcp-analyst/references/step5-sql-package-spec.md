@@ -14,6 +14,14 @@ Ensure every query is bounded, traceable, read-only, and auditable.
 - `sql_package` with stable query IDs, parameter contract, and execution metadata.
 - session-aware audit artifact plan for Step 6 persistence.
 
+## Mandatory Persistence Plan
+`sql_package` must include a persistence plan before execution:
+- `enforce_sql_persist`: `true`
+- `session_id`
+- `sql_md_path`: `audit/<session_id>/sql.md`
+- `sql_dir_path`: `audit/<session_id>/sql`
+- `on_persist_failure`: `fail_fast`
+
 ## SQL Package Components
 A valid package contains these query groups:
 1. `baseline_queries`
@@ -109,6 +117,7 @@ Before handing to Step 6:
 4. all tables/columns exist in Step 3 data map
 5. query outputs include fields needed by Step 7 reporting
 6. `session_id` is present for audit artifact generation
+7. persistence policy is enabled (`enforce_sql_persist=true`)
 
 If validation fails:
 - mark `sql_package_status = FAIL`
@@ -150,6 +159,10 @@ If validation fails:
       "session_id": "",
       "sql_md_path": "audit/<session_id>/sql.md",
       "sql_dir_path": "audit/<session_id>/sql"
+    },
+    "persistence_policy": {
+      "enforce_sql_persist": true,
+      "on_persist_failure": "fail_fast"
     }
   }
 }
@@ -183,6 +196,10 @@ If validation fails:
       "session_id": "session_20260305_001",
       "sql_md_path": "audit/session_20260305_001/sql.md",
       "sql_dir_path": "audit/session_20260305_001/sql"
+    },
+    "persistence_policy": {
+      "enforce_sql_persist": true,
+      "on_persist_failure": "fail_fast"
     }
   }
 }
