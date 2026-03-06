@@ -23,7 +23,7 @@ done < <(find skills/sql-to-bi-builder/scripts -type f -name '*.py' | sort)
 
 while IFS= read -r py_file; do
   py_files+=("$py_file")
-done < <(find services/backend -type f -name '*.py' 2>/dev/null | sort)
+done < <(find services -type f -name '*.py' 2>/dev/null | sort)
 
 if [[ ${#py_files[@]} -gt 0 ]]; then
   python3 -m py_compile "${py_files[@]}"

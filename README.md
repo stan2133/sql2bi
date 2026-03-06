@@ -50,12 +50,14 @@ python -m pip install -r services/backend/requirements.txt
 Default ports:
 - backend: `127.0.0.1:18000`
 - frontend: `127.0.0.1:15173`
+- skill-agent (LangChain + SSE): `127.0.0.1:18100`
 
 Start:
 
 ```bash
 bash services/start_backend.sh
 bash services/start_frontend.sh
+bash services/start_skill_agent.sh
 ```
 
 Behavior:
@@ -128,6 +130,35 @@ For frontend render e2e test, install JS test dependency first:
 ```bash
 npm --prefix tests/e2e install
 python -m unittest tests/integration/test_sqlmd_to_frontend_e2e.py
+```
+
+Skill-agent stream integration test:
+
+```bash
+python -m pip install -r services/skill_agent/requirements.txt
+python -m unittest tests/integration/test_skill_agent_stream.py
+```
+
+## Skill Agent HTTP Stream
+
+Run:
+
+```bash
+python -m pip install -r services/skill_agent/requirements.txt
+bash services/start_skill_agent.sh
+```
+
+Stream call example (`text/event-stream` / SSE):
+
+```bash
+curl -N -X POST "http://127.0.0.1:18100/api/v1/skills/stream" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "prompt":"请先构建 BI dashboard，再给出业务分析计划",
+    "skills":["sql-to-bi-builder","starrocks-mcp-analyst"],
+    "sql_md_path":"/Users/lyg/software/sql2bi/sample.sql.md"
+  }'
 ```
 
 ## Git Hooks
