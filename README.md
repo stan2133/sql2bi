@@ -115,11 +115,19 @@ curl -X POST http://127.0.0.1:18000/api/v1/import/sql-md \
 Current backend integration tests cover:
 - `sql.md` import -> query execution -> session SQL audit files persistence
 - read-only SQL guard (DDL is blocked)
+- end-to-end path: `sql.md -> pipeline -> backend API -> frontend-lite DOM render`
 
 Run with Python 3.12 environment:
 
 ```bash
 python -m unittest tests/integration/test_backend_audit_integration.py
+```
+
+For frontend render e2e test, install JS test dependency first:
+
+```bash
+npm --prefix tests/e2e install
+python -m unittest tests/integration/test_sqlmd_to_frontend_e2e.py
 ```
 
 ## Git Hooks

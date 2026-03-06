@@ -1,0 +1,37 @@
+name: Integration E2E
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+
+jobs:
+  sqlmd-to-frontend-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install backend dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r services/backend/requirements.txt
+
+      - name: Setup Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install frontend e2e dependencies
+        run: npm --prefix tests/e2e install
+
+      - name: Run integration tests
+        run: |
+          python -m unittest \
+            tests/integration/test_backend_audit_integration.py \
+            tests/integration/test_sqlmd_to_frontend_e2e.py

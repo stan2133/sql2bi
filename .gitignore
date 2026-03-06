@@ -6,6 +6,7 @@ __pycache__/
 .venv/
 .venv312/
 .tools/
+.tools/npm-cache/
 
 # Build/Test
 .pytest_cache/
@@ -25,6 +26,7 @@ services/backend/data/state_lite.json
 services/frontend/node_modules/
 services/frontend/dist/
 services/frontend/.vite/
+tests/e2e/node_modules/
 audit/it_*/
 audit/session_*/
 

@@ -1,0 +1,9 @@
+{
+  "name": "sql2bi-e2e-tests",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "dependencies": {
+    "jsdom": "26.1.0"
+  }
+}
