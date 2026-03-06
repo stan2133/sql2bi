@@ -161,6 +161,57 @@ curl -N -X POST "http://127.0.0.1:18100/api/v1/skills/stream" \
   }'
 ```
 
+### Manual Full Run (Require API Key + Proxy)
+
+Use Python 3.12 venv and provide API/Proxy env vars before running any manual verification:
+
+```bash
+export OPENAI_API_KEY='your_api_key'
+export OPENAI_BASE_URL='https://your-proxy-gateway.example.com/v1'
+export HTTPS_PROXY='http://127.0.0.1:7890'
+export HTTP_PROXY='http://127.0.0.1:7890'
+
+for v in OPENAI_API_KEY OPENAI_BASE_URL HTTPS_PROXY HTTP_PROXY; do
+  [ -n "${!v:-}" ] || { echo "Missing required env: $v"; exit 1; }
+done
+```
+
+Run the stream integration test (end-to-end for the two skills in this branch):
+
+```bash
+/Users/lyg/software/sql2bi/.venv312/bin/python -m unittest tests/integration/test_skill_agent_stream.py
+```
+
+Expected result:
+- `Ran 1 test`
+- `OK`
+
+Manual SSE call example:
+
+```bash
+SID="manual_skill_$(date +%Y%m%d_%H%M%S)"
+curl -N -X POST "http://127.0.0.1:18100/api/v1/skills/stream" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d "{
+    \"prompt\":\"请先构建 BI dashboard，再给出业务分析计划\",
+    \"session_id\":\"${SID}\",
+    \"skills\":[\"sql-to-bi-builder\",\"starrocks-mcp-analyst\"],
+    \"sql_md_path\":\"/Users/lyg/software/sql2bi/sample.sql.md\"
+  }"
+```
+
+Verify generated artifacts:
+
+```bash
+ls -R "/Users/lyg/software/sql2bi/out/skill-agent/${SID}"
+```
+
+Expected key outputs:
+- `.../bi/dashboard.json`
+- `.../reports/.../analysis_plan.md`
+- `.../reports/.../decision_card.md`
+
 ## Git Hooks
 
 Install repo hooks:
