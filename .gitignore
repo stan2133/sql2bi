@@ -4,6 +4,8 @@ __pycache__/
 *.pyo
 *.pyd
 .venv/
+.venv312/
+.tools/
 
 # Build/Test
 .pytest_cache/
@@ -23,6 +25,8 @@ services/backend/data/state_lite.json
 services/frontend/node_modules/
 services/frontend/dist/
 services/frontend/.vite/
+audit/it_*/
+audit/session_*/
 
 # OS
 .DS_Store

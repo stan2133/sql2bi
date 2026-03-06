@@ -1,16 +1,18 @@
 from __future__ import annotations
 
+import os
+import re
 import hashlib
 import json
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pandas as pd
-import polars as pl
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -22,6 +24,22 @@ DATA_DIR = BASE_DIR / "data"
 ARTIFACT_DIR = DATA_DIR / "artifacts"
 STATE_FILE = DATA_DIR / "state.json"
 DB_PATH = DATA_DIR / "metadata.duckdb"
+AUDIT_ROOT = REPO_ROOT / "audit"
+DEFAULT_DUCKDB_DEMO_PATH = REPO_ROOT / "testdata" / "duckdb" / "sql2bi_demo.duckdb"
+QUERY_ROW_LIMIT = max(1, int(os.getenv("SQL2BI_QUERY_ROW_LIMIT", "5000")))
+QUERY_TIMEOUT_SECONDS = max(1, int(os.getenv("SQL2BI_QUERY_TIMEOUT_SECONDS", "30")))
+DEFAULT_QUERY_WORKERS = max(1, int(os.getenv("SQL2BI_QUERY_WORKERS", "4")))
+
+QUERY_EXECUTOR = ThreadPoolExecutor(max_workers=DEFAULT_QUERY_WORKERS)
+
+READ_ONLY_HEAD_RE = re.compile(r"^\s*(SELECT|WITH|EXPLAIN)\b", re.IGNORECASE)
+BLOCKED_SQL_RE = re.compile(
+    r"\b(CREATE|ALTER|DROP|TRUNCATE|RENAME|OPTIMIZE|INSERT|UPDATE|DELETE|MERGE|CALL|ATTACH|DETACH|COPY)\b",
+    re.IGNORECASE,
+)
+PLACEHOLDER_RE = re.compile(
+    r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}|(?<!:):([A-Za-z_][A-Za-z0-9_]*)"
+)
 
 ARTIFACT_FILES = [
     "query_catalog.json",
@@ -50,6 +68,17 @@ class ImportSQLResponse(BaseModel):
     query_count: int
     widget_count: int
     imported_at: str
+
+
+class DatasourceUpsertRequest(BaseModel):
+    id: str
+    type: str
+    config: dict[str, Any]
+
+
+class DatasourceUpdateRequest(BaseModel):
+    type: str | None = None
+    config: dict[str, Any] | None = None
 
 
 def ensure_dirs() -> None:
@@ -167,6 +196,17 @@ def ensure_db() -> None:
             );
             """
         )
+        con.execute(
+            """
+            CREATE TABLE IF NOT EXISTS datasources (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL,
+                config_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+            """
+        )
     finally:
         con.close()
 
@@ -273,36 +313,6 @@ def get_widget_for_query(query_id: str) -> dict[str, Any]:
     raise HTTPException(status_code=404, detail=f"Unknown query_id: {query_id}")
 
 
-def hash_seed(text: str) -> int:
-    return int(hashlib.sha256(text.encode("utf-8")).hexdigest()[:8], 16)
-
-
-def _build_base_frame(query_id: str, semantic: dict[str, Any], filters: dict[str, str]) -> tuple[pl.DataFrame, str, str, str]:
-    dims = (semantic.get("time_fields") or []) + (semantic.get("dimensions") or [])
-    metrics = semantic.get("metrics") or ["value"]
-
-    dim = dims[0] if dims else "category"
-    m1 = metrics[0]
-    m2 = metrics[1] if len(metrics) > 1 else f"{m1}_2"
-
-    filter_key = "|".join(f"{k}={v}" for k, v in sorted(filters.items()))
-    seed = hash_seed(f"{query_id}|{filter_key}")
-
-    if semantic.get("time_fields"):
-        labels = [f"2024-01-{str(i).zfill(2)}" for i in range(1, 13)]
-    else:
-        labels = [f"{dim}_{i}" for i in range(1, 13)]
-
-    boost = 1 + min(len(filter_key), 24) / 120
-    rows = []
-    for i, label in enumerate(labels):
-        v1 = int((70 + (seed + i * 11) % 50 + i * 2) * boost)
-        v2 = int((45 + (seed + i * 7) % 30 + i) * boost)
-        rows.append({dim: label, m1: v1, m2: v2})
-
-    return pl.DataFrame(rows), dim, m1, m2
-
-
 def _try_number(text: str) -> int | float | None:
     stripped = text.strip()
     if not stripped:
@@ -318,92 +328,448 @@ def _try_number(text: str) -> int | float | None:
         return None
 
 
-def _apply_filters(df: pl.DataFrame, filters: dict[str, str]) -> tuple[pl.DataFrame, list[dict[str, str]]]:
-    out = df
-    applied: list[dict[str, str]] = []
+def _normalize_datasource_type(raw: str) -> str:
+    lowered = raw.strip().lower()
+    if lowered in {"postgres", "postgresql"}:
+        return "postgresql"
+    if lowered in {"mysql", "clickhouse", "duckdb"}:
+        return lowered
+    raise HTTPException(status_code=400, detail=f"Unsupported datasource type: {raw}")
 
-    for field, raw_value in filters.items():
-        if field not in out.columns:
-            continue
 
-        value = raw_value.strip()
-        if not value:
-            continue
-
-        # Range filter syntax: "from..to"
-        if ".." in value:
-            left, right = value.split("..", 1)
-            expr = pl.lit(True)
-
-            left_num = _try_number(left)
-            right_num = _try_number(right)
-
-            if left:
-                expr = expr & (
-                    pl.col(field) >= pl.lit(left_num if left_num is not None else left)
-                )
-            if right:
-                expr = expr & (
-                    pl.col(field) <= pl.lit(right_num if right_num is not None else right)
-                )
-
-            out = out.filter(expr)
-            applied.append({"field": field, "mode": "range", "value": value})
-            continue
-
-        # Set filter syntax: "a,b,c"
-        if "," in value:
-            items = [v.strip() for v in value.split(",") if v.strip()]
-            num_items = [_try_number(v) for v in items]
-            if all(v is not None for v in num_items):
-                out = out.filter(pl.col(field).is_in([v for v in num_items if v is not None]))
-            else:
-                out = out.filter(pl.col(field).is_in(items))
-            applied.append({"field": field, "mode": "set", "value": value})
-            continue
-
-        number_value = _try_number(value)
-        if number_value is not None:
-            out = out.filter(pl.col(field) == number_value)
+def _mask_config(config: dict[str, Any]) -> dict[str, Any]:
+    hidden_keys = {"password", "passwd", "token", "secret", "api_key"}
+    out: dict[str, Any] = {}
+    for key, value in config.items():
+        if key.lower() in hidden_keys and isinstance(value, str) and value:
+            out[key] = "***"
         else:
-            out = out.filter(pl.col(field).cast(pl.Utf8) == value)
-        applied.append({"field": field, "mode": "eq", "value": value})
+            out[key] = value
+    return out
 
-    return out, applied
+
+def _validate_datasource_config(ds_type: str, config: dict[str, Any]) -> dict[str, Any]:
+    if ds_type == "duckdb":
+        path = str(config.get("path", "")).strip()
+        if not path:
+            raise HTTPException(status_code=400, detail="duckdb datasource requires config.path")
+        return {
+            "path": path,
+            "read_only": bool(config.get("read_only", True)),
+        }
+    # Keep config for future types to allow registration; execution may still be unsupported.
+    return config
+
+
+def ensure_default_datasources() -> None:
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        row = con.execute("SELECT id FROM datasources WHERE id = 'duckdb_demo'").fetchone()
+        if row:
+            return
+        ts = now_iso()
+        config = {"path": str(DEFAULT_DUCKDB_DEMO_PATH), "read_only": True}
+        con.execute(
+            "INSERT INTO datasources (id, type, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            ["duckdb_demo", "duckdb", json.dumps(config, ensure_ascii=False), ts, ts],
+        )
+    finally:
+        con.close()
+
+
+def _datasource_row_to_dict(row: tuple[Any, ...], mask_sensitive: bool = True) -> dict[str, Any]:
+    config = json.loads(row[2] or "{}")
+    return {
+        "id": row[0],
+        "type": row[1],
+        "config": _mask_config(config) if mask_sensitive else config,
+        "created_at": row[3],
+        "updated_at": row[4],
+    }
+
+
+def get_datasource_record(datasource_id: str) -> dict[str, Any]:
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        row = con.execute(
+            "SELECT id, type, config_json, created_at, updated_at FROM datasources WHERE id = ?",
+            [datasource_id],
+        ).fetchone()
+    finally:
+        con.close()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Unknown datasource: {datasource_id}")
+    return _datasource_row_to_dict(row, mask_sensitive=False)
+
+
+def get_query_record(query_id: str) -> dict[str, Any]:
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        row = con.execute(
+            "SELECT id, sql_text, datasource FROM queries WHERE id = ?",
+            [query_id],
+        ).fetchone()
+    finally:
+        con.close()
+    if not row:
+        raise HTTPException(status_code=404, detail=f"Unknown query_id: {query_id}")
+    datasource = str(row[2] or "").strip() or "duckdb_demo"
+    return {"id": row[0], "sql_text": row[1] or "", "datasource": datasource}
+
+
+def _strip_sql_comments(sql_text: str) -> str:
+    no_block = re.sub(r"/\*.*?\*/", " ", sql_text, flags=re.DOTALL)
+    return re.sub(r"--.*?$", " ", no_block, flags=re.MULTILINE)
+
+
+def ensure_read_only_sql(sql_text: str) -> str:
+    normalized = _strip_sql_comments(sql_text).strip()
+    if not normalized:
+        raise HTTPException(status_code=400, detail="SQL text is empty")
+
+    collapsed = normalized.rstrip().rstrip(";").strip()
+    if ";" in collapsed:
+        raise HTTPException(status_code=400, detail="Only a single SQL statement is allowed")
+
+    if not READ_ONLY_HEAD_RE.match(normalized):
+        raise HTTPException(status_code=400, detail="Only read-only SELECT/WITH/EXPLAIN SQL is allowed")
+
+    blocked = BLOCKED_SQL_RE.search(normalized)
+    if blocked:
+        raise HTTPException(status_code=400, detail=f"Blocked SQL keyword detected: {blocked.group(1).upper()}")
+    return collapsed
+
+
+def _coerce_bind_value(raw_value: str) -> Any:
+    text = raw_value.strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    as_number = _try_number(text)
+    return as_number if as_number is not None else text
+
+
+def compile_sql_with_bindings(sql_text: str, filters: dict[str, str]) -> tuple[str, list[Any], list[str]]:
+    runtime_params: dict[str, str] = {k: v for k, v in filters.items()}
+    runtime_params.setdefault("start_date", "1970-01-01")
+    runtime_params.setdefault("end_date", "2999-12-31")
+    runtime_params.setdefault("start_time", "1970-01-01 00:00:00")
+    runtime_params.setdefault("end_time", "2999-12-31 23:59:59")
+
+    bind_values: list[Any] = []
+    missing: list[str] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1) or match.group(2) or ""
+        if name in runtime_params:
+            bind_values.append(_coerce_bind_value(runtime_params[name]))
+        else:
+            bind_values.append(None)
+            if name not in missing:
+                missing.append(name)
+        return "?"
+
+    rendered = PLACEHOLDER_RE.sub(_replace, sql_text)
+    return rendered, bind_values, missing
+
+
+def _run_duckdb_query_sync(db_path: str, read_only: bool, sql_text: str, bind_values: list[Any]) -> pd.DataFrame:
+    con = duckdb.connect(db_path, read_only=read_only)
+    try:
+        limited_sql = f"SELECT * FROM ({sql_text}) AS __sql2bi_q LIMIT {QUERY_ROW_LIMIT + 1}"
+        return con.execute(limited_sql, bind_values).fetchdf()
+    finally:
+        con.close()
+
+
+def execute_query_sql(datasource: dict[str, Any], sql_text: str, bind_values: list[Any]) -> tuple[pd.DataFrame, bool]:
+    ds_type = _normalize_datasource_type(str(datasource.get("type", "duckdb")))
+    config = datasource.get("config") or {}
+    if ds_type != "duckdb":
+        raise HTTPException(status_code=501, detail=f"Datasource type not yet executable: {ds_type}")
+
+    db_path = str(config.get("path", "")).strip()
+    if not db_path:
+        raise HTTPException(status_code=400, detail=f"Datasource {datasource.get('id')} missing config.path")
+    resolved = Path(db_path).expanduser().resolve()
+    if not resolved.exists():
+        raise HTTPException(status_code=400, detail=f"DuckDB file not found: {resolved}")
+
+    read_only = bool(config.get("read_only", True))
+    future = QUERY_EXECUTOR.submit(
+        _run_duckdb_query_sync, str(resolved), read_only, sql_text, bind_values
+    )
+    try:
+        result_df = future.result(timeout=QUERY_TIMEOUT_SECONDS)
+    except FutureTimeoutError as exc:
+        future.cancel()
+        raise HTTPException(status_code=504, detail=f"Query timed out after {QUERY_TIMEOUT_SECONDS}s") from exc
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=400, detail=f"Query execution failed: {exc}") from exc
+
+    truncated = len(result_df.index) > QUERY_ROW_LIMIT
+    if truncated:
+        result_df = result_df.head(QUERY_ROW_LIMIT)
+    return result_df, truncated
+
+
+def infer_dimension_and_metrics(df: pd.DataFrame, semantic: dict[str, Any]) -> tuple[str, list[str]]:
+    if df.empty and not list(df.columns):
+        return "dimension", []
+
+    columns = list(df.columns)
+    semantic_dims = (semantic.get("time_fields") or []) + (semantic.get("dimensions") or [])
+
+    dimension = next((c for c in semantic_dims if c in columns), None)
+    if not dimension:
+        dimension = next((c for c in columns if not pd.api.types.is_numeric_dtype(df[c])), None)
+    if not dimension:
+        dimension = columns[0]
+
+    semantic_metrics = [m for m in (semantic.get("metrics") or []) if m in columns]
+    numeric_metrics = [m for m in semantic_metrics if pd.api.types.is_numeric_dtype(df[m])]
+    if not numeric_metrics:
+        numeric_metrics = [c for c in columns if c != dimension and pd.api.types.is_numeric_dtype(df[c])]
+
+    if not numeric_metrics:
+        fallback = columns[1] if len(columns) > 1 and columns[1] != dimension else dimension
+        numeric_metrics = [fallback]
+
+    if len(numeric_metrics) < 2:
+        for col in columns:
+            if col in {dimension, *numeric_metrics}:
+                continue
+            if pd.api.types.is_numeric_dtype(df[col]):
+                numeric_metrics.append(col)
+                if len(numeric_metrics) == 2:
+                    break
+
+    return dimension, numeric_metrics[:2]
+
+
+def _build_applied_filters(filters: dict[str, str]) -> list[dict[str, str]]:
+    applied: list[dict[str, str]] = []
+    for field, value in filters.items():
+        mode = "eq"
+        if ".." in value:
+            mode = "range"
+        elif "," in value:
+            mode = "set"
+        applied.append({"field": field, "mode": mode, "value": value})
+    return applied
+
+
+def _build_summary(df: pd.DataFrame, metrics: list[str]) -> dict[str, float]:
+    summary: dict[str, float] = {}
+    for metric in metrics:
+        if metric in df.columns and pd.api.types.is_numeric_dtype(df[metric]):
+            summary[metric] = float(pd.to_numeric(df[metric], errors="coerce").fillna(0).sum())
+        else:
+            summary[metric] = 0.0
+    return summary
+
+
+def resolve_session_id(request: Request) -> str:
+    raw_session_id = (
+        request.headers.get("X-SQL2BI-Session")
+        or request.query_params.get("session_id")
+        or ""
+    ).strip()
+    if not raw_session_id:
+        raw_session_id = datetime.now(timezone.utc).strftime("session_%Y%m%d_default")
+    # Keep session IDs filesystem-safe.
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", raw_session_id)
+
+
+def _ensure_sql_md_header(sql_md_path: Path, session_id: str) -> None:
+    if sql_md_path.exists():
+        return
+    content = (
+        "# SQL 审计记录\n\n"
+        "## 会话信息\n"
+        f"- `session_id`: `{session_id}`\n"
+        f"- `创建时间`: `{now_iso()}`\n"
+        "- `用途`: 自动记录本会话实际执行 SQL（用于人工审计与升级）\n\n"
+        "## 执行 SQL 记录\n"
+    )
+    sql_md_path.write_text(content, encoding="utf-8")
+
+
+def persist_sql_audit_record(
+    session_id: str,
+    query_id: str,
+    sql_text: str,
+    bind_values: list[Any],
+    filters: dict[str, str],
+    row_count: int,
+    elapsed_ms: int,
+    status: str,
+    error_message: str | None = None,
+) -> dict[str, str]:
+    session_dir = AUDIT_ROOT / session_id
+    sql_dir = session_dir / "sql"
+    sql_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_query_id = re.sub(r"[^A-Za-z0-9_.-]", "_", query_id)
+    sql_file_path = sql_dir / f"{safe_query_id}.sql"
+    sql_md_path = session_dir / "sql.md"
+    _ensure_sql_md_header(sql_md_path, session_id)
+
+    executed_at = now_iso()
+    sql_file_body = (
+        f"-- session_id: {session_id}\n"
+        f"-- query_id: {query_id}\n"
+        f"-- status: {status}\n"
+        f"-- executed_at: {executed_at}\n"
+        f"-- elapsed_ms: {elapsed_ms}\n"
+        f"-- row_count: {row_count}\n"
+        f"-- bind_values: {json.dumps(bind_values, ensure_ascii=False)}\n\n"
+        f"{sql_text.strip()}\n"
+    )
+    sql_file_path.write_text(sql_file_body, encoding="utf-8")
+
+    existing = sql_md_path.read_text(encoding="utf-8")
+    details = (
+        "\n---\n\n"
+        f"## 查询: `{query_id}`\n"
+        f"- `状态`: `{status}`\n"
+        f"- `执行时间`: `{executed_at}`\n"
+        f"- `耗时_ms`: `{elapsed_ms}`\n"
+        f"- `返回行数`: `{row_count}`\n"
+        f"- `参数`: `{json.dumps(bind_values, ensure_ascii=False)}`\n"
+        f"- `过滤条件`: `{json.dumps(filters, ensure_ascii=False)}`\n"
+        f"- `sql文件`: `{sql_file_path.as_posix()}`\n"
+    )
+    if error_message:
+        details += f"- `错误`: `{error_message}`\n"
+    details += f"\n```sql\n{sql_text.strip()}\n```\n"
+
+    updated = existing + details
+    sql_md_path.write_text(updated, encoding="utf-8")
+
+    return {
+        "sql_md_path": sql_md_path.as_posix(),
+        "sql_file_path": sql_file_path.as_posix(),
+    }
 
 
 def generate_query_rows(query_id: str, semantic: dict[str, Any], filters: dict[str, str]) -> dict[str, Any]:
-    base_df, dim, m1, m2 = _build_base_frame(query_id, semantic, filters)
-    filtered_df, applied_filters = _apply_filters(base_df, filters)
+    query = get_query_record(query_id)
+    datasource = get_datasource_record(query["datasource"])
 
-    # Polars is the primary engine for grouping and ordering.
-    grouped_df = (
-        filtered_df.group_by(dim)
-        .agg(
-            [
-                pl.col(m1).sum().alias(m1),
-                pl.col(m2).sum().alias(m2),
-            ]
-        )
-        .sort(dim)
-    )
+    read_only_sql = ensure_read_only_sql(query["sql_text"])
+    rendered_sql, bind_values, missing_parameters = compile_sql_with_bindings(read_only_sql, filters)
+    started_at = datetime.now(timezone.utc)
+    result_df, truncated = execute_query_sql(datasource, rendered_sql, bind_values)
+    elapsed_ms = max(0, int((datetime.now(timezone.utc) - started_at).total_seconds() * 1000))
 
-    # Pandas is used for compatibility-oriented row export and summaries.
-    pd_df = pd.DataFrame(grouped_df.to_dicts())
-    rows = pd_df.to_dict(orient="records")
-
-    summary = {
-        m1: float(pd_df[m1].sum()) if m1 in pd_df.columns and not pd_df.empty else 0.0,
-        m2: float(pd_df[m2].sum()) if m2 in pd_df.columns and not pd_df.empty else 0.0,
-    }
+    dimension, metrics = infer_dimension_and_metrics(result_df, semantic)
+    rows = json.loads(result_df.to_json(orient="records", date_format="iso"))
+    summary = _build_summary(result_df, metrics)
 
     return {
-        "dimension": dim,
-        "metrics": [m1, m2],
+        "dimension": dimension,
+        "metrics": metrics,
         "rows": rows,
         "row_count": len(rows),
-        "applied_filters": applied_filters,
+        "applied_filters": _build_applied_filters(filters),
         "summary": summary,
+        "datasource": datasource["id"],
+        "sql_truncated": truncated,
+        "missing_parameters": missing_parameters,
+        "audit_sql": rendered_sql,
+        "audit_bind_values": bind_values,
+        "elapsed_ms": elapsed_ms,
+    }
+
+
+def list_datasources() -> list[dict[str, Any]]:
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        rows = con.execute(
+            "SELECT id, type, config_json, created_at, updated_at FROM datasources ORDER BY id"
+        ).fetchall()
+    finally:
+        con.close()
+    return [_datasource_row_to_dict(row, mask_sensitive=True) for row in rows]
+
+
+def upsert_datasource(
+    datasource_id: str,
+    ds_type: str,
+    config: dict[str, Any],
+    keep_created_at: bool = False,
+) -> dict[str, Any]:
+    normalized_type = _normalize_datasource_type(ds_type)
+    normalized_config = _validate_datasource_config(normalized_type, config)
+    ts = now_iso()
+
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        existing = con.execute(
+            "SELECT created_at FROM datasources WHERE id = ?",
+            [datasource_id],
+        ).fetchone()
+        created_at = existing[0] if existing and keep_created_at else ts
+        con.execute("DELETE FROM datasources WHERE id = ?", [datasource_id])
+        con.execute(
+            "INSERT INTO datasources (id, type, config_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?)",
+            [datasource_id, normalized_type, json.dumps(normalized_config, ensure_ascii=False), created_at, ts],
+        )
+    finally:
+        con.close()
+    return get_datasource_record(datasource_id)
+
+
+def delete_datasource(datasource_id: str) -> None:
+    con = duckdb.connect(str(DB_PATH))
+    try:
+        exists = con.execute("SELECT 1 FROM datasources WHERE id = ?", [datasource_id]).fetchone()
+        if not exists:
+            raise HTTPException(status_code=404, detail=f"Unknown datasource: {datasource_id}")
+        in_use = con.execute("SELECT COUNT(*) FROM queries WHERE datasource = ?", [datasource_id]).fetchone()
+        if in_use and int(in_use[0]) > 0:
+            raise HTTPException(
+                status_code=409,
+                detail=f"Datasource {datasource_id} is referenced by existing queries",
+            )
+        con.execute("DELETE FROM datasources WHERE id = ?", [datasource_id])
+    finally:
+        con.close()
+
+
+def test_datasource_connection(datasource: dict[str, Any]) -> dict[str, Any]:
+    ds_type = _normalize_datasource_type(str(datasource.get("type", "duckdb")))
+    config = datasource.get("config") or {}
+
+    if ds_type != "duckdb":
+        raise HTTPException(status_code=501, detail=f"Datasource type not yet testable: {ds_type}")
+
+    db_path = str(config.get("path", "")).strip()
+    if not db_path:
+        raise HTTPException(status_code=400, detail=f"Datasource {datasource.get('id')} missing config.path")
+    resolved = Path(db_path).expanduser().resolve()
+    if not resolved.exists():
+        raise HTTPException(status_code=400, detail=f"DuckDB file not found: {resolved}")
+
+    con: duckdb.DuckDBPyConnection | None = None
+    try:
+        con = duckdb.connect(str(resolved), read_only=bool(config.get("read_only", True)))
+        con.execute("SELECT 1").fetchone()
+    except duckdb.Error as exc:
+        raise HTTPException(status_code=400, detail=f"Datasource connection test failed: {exc}") from exc
+    finally:
+        if con is not None:
+            con.close()
+
+    return {
+        "ok": True,
+        "datasource": datasource.get("id"),
+        "type": ds_type,
+        "path": str(resolved),
+        "tested_at": now_iso(),
     }
 
 
@@ -411,11 +777,68 @@ def generate_query_rows(query_id: str, semantic: dict[str, Any], filters: dict[s
 def startup() -> None:
     ensure_dirs()
     ensure_db()
+    ensure_default_datasources()
 
 
 @app.get("/api/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "time": now_iso()}
+
+
+@app.get("/api/v1/datasources")
+def api_list_datasources() -> dict[str, Any]:
+    return {"datasources": list_datasources()}
+
+
+@app.get("/api/v1/datasources/{datasource_id}")
+def api_get_datasource(datasource_id: str) -> dict[str, Any]:
+    record = get_datasource_record(datasource_id)
+    record["config"] = _mask_config(record.get("config") or {})
+    return record
+
+
+@app.post("/api/v1/datasources")
+def api_create_datasource(req: DatasourceUpsertRequest) -> dict[str, Any]:
+    datasource_id = req.id.strip()
+    if not datasource_id:
+        raise HTTPException(status_code=400, detail="datasource id is required")
+    existing = None
+    try:
+        existing = get_datasource_record(datasource_id)
+    except HTTPException as exc:
+        if exc.status_code != 404:
+            raise
+    if existing:
+        raise HTTPException(status_code=409, detail=f"Datasource already exists: {datasource_id}")
+
+    saved = upsert_datasource(datasource_id, req.type, req.config)
+    saved["config"] = _mask_config(saved.get("config") or {})
+    return saved
+
+
+@app.put("/api/v1/datasources/{datasource_id}")
+def api_update_datasource(datasource_id: str, req: DatasourceUpdateRequest) -> dict[str, Any]:
+    current = get_datasource_record(datasource_id)
+    ds_type = req.type or current["type"]
+    config = current.get("config") or {}
+    if req.config is not None:
+        config = req.config
+
+    saved = upsert_datasource(datasource_id, ds_type, config, keep_created_at=True)
+    saved["config"] = _mask_config(saved.get("config") or {})
+    return saved
+
+
+@app.delete("/api/v1/datasources/{datasource_id}")
+def api_delete_datasource(datasource_id: str) -> dict[str, Any]:
+    delete_datasource(datasource_id)
+    return {"deleted": True, "datasource": datasource_id}
+
+
+@app.post("/api/v1/datasources/{datasource_id}/test")
+def api_test_datasource(datasource_id: str) -> dict[str, Any]:
+    datasource = get_datasource_record(datasource_id)
+    return test_datasource_connection(datasource)
 
 
 @app.post("/api/v1/import/sql-md", response_model=ImportSQLResponse)
@@ -496,6 +919,7 @@ def get_query_data(request: Request, query_id: str, include_filters: bool = Quer
 
     widget = get_widget_for_query(query_id)
     semantic = get_semantic_for_query(query_id)
+    session_id = resolve_session_id(request)
 
     filters: dict[str, str] = {}
     if include_filters:
@@ -510,6 +934,20 @@ def get_query_data(request: Request, query_id: str, include_filters: bool = Quer
             filters[key] = text
 
     rows_payload = generate_query_rows(query_id, semantic, filters)
+    try:
+        audit_paths = persist_sql_audit_record(
+            session_id=session_id,
+            query_id=query_id,
+            sql_text=rows_payload.get("audit_sql", ""),
+            bind_values=rows_payload.get("audit_bind_values", []),
+            filters=filters,
+            row_count=int(rows_payload.get("row_count", 0)),
+            elapsed_ms=int(rows_payload.get("elapsed_ms", 0)),
+            status="PASS",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Audit persistence failed: {exc}") from exc
+
     return {
         "query_id": query_id,
         "filters": filters,
@@ -520,5 +958,10 @@ def get_query_data(request: Request, query_id: str, include_filters: bool = Quer
         "row_count": rows_payload["row_count"],
         "applied_filters": rows_payload["applied_filters"],
         "summary": rows_payload["summary"],
+        "session_id": session_id,
+        "audit_sql_md_path": audit_paths["sql_md_path"],
+        "audit_sql_file_path": audit_paths["sql_file_path"],
+        "sql_truncated": rows_payload["sql_truncated"],
+        "missing_parameters": rows_payload["missing_parameters"],
         "generated_at": now_iso(),
     }

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3.11
+#!/usr/bin/env python3.12
 """Run end-to-end SQL markdown to BI scaffold pipeline."""
 
 from __future__ import annotations
@@ -15,8 +15,8 @@ def run_step(cmd: list[str]) -> None:
 
 
 def main() -> None:
-    if sys.version_info[:2] != (3, 11):
-        raise RuntimeError("python3.11 is required for this pipeline")
+    if sys.version_info[:2] != (3, 12):
+        raise RuntimeError("python3.12 is required for this pipeline")
 
     parser = argparse.ArgumentParser(description="Run SQL->BI pipeline")
     parser.add_argument("--input", required=True, help="Path to sql.md")

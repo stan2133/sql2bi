@@ -22,27 +22,27 @@ Turn `sql.md` (multiple SQL blocks in markdown) into a runnable BI prototype:
   - DuckDB init SQL: `testdata/duckdb/init.sql`
   - Demo DB file: `testdata/duckdb/sql2bi_demo.duckdb`
 
-## Python And Version Control (Python 3.11 + uv)
+## Python And Version Control (Python 3.12 + uv)
 
-This repo is pinned to Python 3.11:
-- `.python-version`: `3.11`
-- `pyproject.toml`: `requires-python = ">=3.11,<3.12"`
+Use Python 3.12 for local development and integration testing.
 
 Recommended setup with `uv`:
 
 ```bash
-uv python pin 3.11
-uv venv --python 3.11 .venv
+uv python pin 3.12
+uv venv --python 3.12 .venv
 source .venv/bin/activate
 uv pip install -r requirements-dev.txt
 uv pip install -r services/backend/requirements.txt
 ```
 
-If `uv` is unavailable, use built-in scripts:
+If `uv` is unavailable, use built-in `venv`:
 
 ```bash
-bash skills/sql-to-bi-builder/scripts/setup_venv.sh --with-dev
-bash skills/sql-to-bi-builder/scripts/check_python311.sh --with-dev
+python3.12 -m venv .venv312
+source .venv312/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m pip install -r services/backend/requirements.txt
 ```
 
 ## Run Services
@@ -66,10 +66,10 @@ Behavior:
 
 ## End-to-End: sql.md -> BI Artifacts
 
-Run the skill pipeline (requires Python 3.11 runtime):
+Run the skill pipeline (requires Python 3.12 runtime):
 
 ```bash
-python3.11 skills/sql-to-bi-builder/scripts/run_pipeline.py \
+python3.12 skills/sql-to-bi-builder/scripts/run_pipeline.py \
   --input /abs/path/sql.md \
   --out /abs/path/out \
   --with-services
@@ -86,11 +86,21 @@ Generated files:
 ## Backend API (used by frontend)
 
 - `GET /api/health`
+- `GET /api/v1/datasources`
+- `GET /api/v1/datasources/{id}`
+- `POST /api/v1/datasources`
+- `PUT /api/v1/datasources/{id}`
+- `DELETE /api/v1/datasources/{id}`
+- `POST /api/v1/datasources/{id}/test`
 - `POST /api/v1/import/sql-md` with body:
   - `{"sql_md_path": "/abs/path/to/sql.md"}`
 - `GET /api/v1/dashboard/current`
 - `GET /api/v1/filters`
 - `GET /api/v1/queries/{query_id}/data?include_filters=true&field=value`
+
+Query data API now executes stored SQL against configured datasource (read-only only), and persists audit artifacts to:
+- `audit/<session_id>/sql.md`
+- `audit/<session_id>/sql/<query_id>.sql`
 
 Example import:
 
@@ -98,6 +108,18 @@ Example import:
 curl -X POST http://127.0.0.1:18000/api/v1/import/sql-md \
   -H 'Content-Type: application/json' \
   -d '{"sql_md_path":"/Users/lyg/software/sql2bi/testdata/sql/demo.sql.md"}'
+```
+
+## Integration Tests
+
+Current backend integration tests cover:
+- `sql.md` import -> query execution -> session SQL audit files persistence
+- read-only SQL guard (DDL is blocked)
+
+Run with Python 3.12 environment:
+
+```bash
+python -m unittest tests/integration/test_backend_audit_integration.py
 ```
 
 ## Git Hooks
@@ -111,4 +133,3 @@ bash scripts/install-git-hooks.sh
 Hooks:
 - `pre-commit`: conflict markers, shell/python syntax, requirement pin checks
 - `pre-push`: smoke pipeline run on `sample.sql.md`
-
