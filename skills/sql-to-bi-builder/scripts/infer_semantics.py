@@ -8,14 +8,34 @@ import json
 import re
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 AGG_RE = re.compile(r"\b(sum|count|avg|min|max)\s*\(", re.IGNORECASE)
+COUNT_DISTINCT_RE = re.compile(r"\bcount\s*\(\s*distinct\b", re.IGNORECASE)
 TIME_NAME_RE = re.compile(r"\b(date|dt|day|week|month|year|time|hour)\b", re.IGNORECASE)
 TIME_FIELD_RE = re.compile(
     r"(^|_)(dt|date|day|week|month|year|time|hour|minute|second|timestamp|ts|at)$",
     re.IGNORECASE,
 )
+TIME_BUCKET_FUNC_RE = re.compile(
+    r"\bdate_trunc\s*\(\s*['\"](?P<grain>day|week|month|quarter|year)['\"]",
+    re.IGNORECASE,
+)
+EXTRACT_GRAIN_RE = re.compile(
+    r"\bextract\s*\(\s*(?P<grain>day|week|month|quarter|year)\s+from",
+    re.IGNORECASE,
+)
+DATE_FUNC_DAY_RE = re.compile(r"\bdate\s*\(", re.IGNORECASE)
+MONTH_FORMAT_RE = re.compile(r"%(?:Y-)?m|yyyy-?mm", re.IGNORECASE)
+YEAR_FORMAT_RE = re.compile(r"%Y|yyyy", re.IGNORECASE)
+DERIVED_YOY_RE = re.compile(r"(^|[^a-z0-9])(yoy|year[_\s]?over[_\s]?year)([^a-z0-9]|$)", re.IGNORECASE)
+DERIVED_MOM_RE = re.compile(r"(^|[^a-z0-9])(mom|month[_\s]?over[_\s]?month)([^a-z0-9]|$)", re.IGNORECASE)
+DERIVED_YTD_RE = re.compile(r"(^|[^a-z0-9])(ytd|year[_\s]?to[_\s]?date)([^a-z0-9]|$)", re.IGNORECASE)
+METRIC_NAME_RE = re.compile(
+    r"\b(gmv|revenue|sales|amount|amt|count|cnt|total|rate|ratio|pct|percent|orders|users)\b",
+    re.IGNORECASE,
+)
+ARITHMETIC_RE = re.compile(r"[+\-*/]")
 WHERE_RE = re.compile(
     r"\bwhere\b(?P<body>.*?)(\bgroup\s+by\b|\border\s+by\b|\bhaving\b|\blimit\b|\bunion\b|$)",
     re.IGNORECASE | re.DOTALL,
@@ -112,17 +132,122 @@ def extract_alias(expr: str, idx: int) -> str:
     if len(tail) > 1 and re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*$", tail[-1]):
         return tail[-1]
 
+    cleaned = expr.strip()
+    if re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_\.]*", cleaned):
+        return cleaned.split(".")[-1]
+
     return f"col_{idx:02d}"
 
 
-def detect_role(alias: str, expr: str) -> str:
-    if AGG_RE.search(expr):
-        return "metric"
+def normalize_name(value: str) -> str:
+    return re.sub(r"[^a-zA-Z0-9_]+", "_", value.strip().lower()).strip("_")
+
+
+def parse_mapping(raw: Any) -> Dict[str, str]:
+    if isinstance(raw, dict):
+        return {normalize_name(str(k)): str(v).strip().lower() for k, v in raw.items() if str(k).strip()}
+    if isinstance(raw, str):
+        out: Dict[str, str] = {}
+        for piece in re.split(r"[;,]", raw):
+            token = piece.strip()
+            if not token:
+                continue
+            if ":" in token:
+                key, value = token.split(":", 1)
+            elif "=" in token:
+                key, value = token.split("=", 1)
+            else:
+                continue
+            key_name = normalize_name(key)
+            if key_name:
+                out[key_name] = value.strip().lower()
+        return out
+    return {}
+
+
+def parse_semantic_override(query: Dict) -> Dict[str, Any]:
+    raw = query.get("semantic_override")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, dict):
+                return parsed
+        except json.JSONDecodeError:
+            return {}
+    return {}
+
+
+def detect_metric_role(alias: str, expr: str) -> Tuple[Optional[str], str, float]:
+    text = " ".join(expr.strip().lower().split())
+    alias_l = alias.lower()
+
+    if COUNT_DISTINCT_RE.search(text):
+        return "count_distinct", "detected count(distinct ...)", 0.99
+    if re.search(r"\bsum\s*\(", text):
+        return "sum", "detected sum(...)", 0.98
+    if re.search(r"\bavg\s*\(", text):
+        return "avg", "detected avg(...)", 0.98
+    if re.search(r"\bcount\s*\(", text):
+        return "count", "detected count(...)", 0.98
+    if re.search(r"\bmin\s*\(", text):
+        return "min", "detected min(...)", 0.96
+    if re.search(r"\bmax\s*\(", text):
+        return "max", "detected max(...)", 0.96
+    if AGG_RE.search(text) and "/" in text:
+        return "ratio", "detected aggregate ratio expression", 0.88
+    if ARITHMETIC_RE.search(text) and METRIC_NAME_RE.search(alias_l):
+        return "unknown", "metric-like alias with arithmetic expression", 0.7
+    if METRIC_NAME_RE.search(alias_l) and AGG_RE.search(text):
+        return "unknown", "metric-like alias with aggregate expression", 0.68
+    return None, "no strong metric signal", 0.55
+
+
+def detect_time_grain(alias: str, expr: str) -> Tuple[str, str, float]:
+    text = " ".join(expr.strip().lower().split())
+    alias_l = alias.lower()
+
+    m = TIME_BUCKET_FUNC_RE.search(text)
+    if m:
+        grain = m.group("grain").lower()
+        return grain, f"detected date_trunc('{grain}', ...)", 0.99
+
+    m = EXTRACT_GRAIN_RE.search(text)
+    if m:
+        grain = m.group("grain").lower()
+        return grain, f"detected extract({grain} from ...)", 0.95
+
+    if DATE_FUNC_DAY_RE.search(text):
+        return "day", "detected date(...) bucketing", 0.92
+
+    if re.search(r"(^|_)(week|wk|week_start)($|_)", alias_l):
+        return "week", "time alias suggests week grain", 0.9
+    if re.search(r"(^|_)(month|mon|month_start)($|_)", alias_l):
+        return "month", "time alias suggests month grain", 0.9
+    if re.search(r"(^|_)(quarter|qtr)($|_)", alias_l):
+        return "quarter", "time alias suggests quarter grain", 0.9
+    if re.search(r"(^|_)(year|yr)($|_)", alias_l):
+        return "year", "time alias suggests year grain", 0.9
+    if re.search(r"(^|_)(dt|date|day)($|_)", alias_l):
+        return "day", "time alias suggests day grain", 0.86
+
+    if MONTH_FORMAT_RE.search(text):
+        return "month", "detected month date format pattern", 0.8
+    if YEAR_FORMAT_RE.search(text):
+        return "year", "detected year date format pattern", 0.76
+
+    return "unknown", "unable to infer specific time grain", 0.4
+
+
+def detect_role(alias: str, expr: str, metric_role: Optional[str]) -> Tuple[str, str, float]:
+    if metric_role is not None:
+        return "metric", f"metric role={metric_role}", 0.95
 
     if TIME_NAME_RE.search(alias) or TIME_NAME_RE.search(expr):
-        return "time"
+        return "time", "time name pattern matched", 0.9
 
-    return "dimension"
+    return "dimension", "fallback dimension classification", 0.62
 
 
 def detect_grain(fields: List[Dict]) -> str:
@@ -138,6 +263,165 @@ def detect_grain(fields: List[Dict]) -> str:
         return "categorical"
     return "detail"
 
+
+def normalize_grain(value: Any) -> str:
+    grain = str(value or "").strip().lower()
+    if grain in {"day", "week", "month", "quarter", "year"}:
+        return grain
+    return "unknown"
+
+
+def infer_query_time_grain(fields: List[Dict]) -> Tuple[str, str]:
+    counts: Dict[str, int] = {}
+    for field in fields:
+        if field.get("role") != "time":
+            continue
+        grain = normalize_grain(field.get("time_grain"))
+        if grain == "unknown":
+            continue
+        counts[grain] = counts.get(grain, 0) + 1
+
+    if not counts:
+        return "unknown", "no time grain signal"
+
+    rank = {"day": 1, "week": 2, "month": 3, "quarter": 4, "year": 5}
+    chosen = sorted(counts.items(), key=lambda kv: (-kv[1], rank.get(kv[0], 999)))[0][0]
+    return chosen, "derived from time fields"
+
+
+def infer_derived_type(alias: str, expr: str) -> Tuple[Optional[str], str]:
+    text = " ".join(expr.strip().lower().split())
+    alias_l = alias.lower()
+
+    if DERIVED_YOY_RE.search(alias_l) or DERIVED_YOY_RE.search(text):
+        return "yoy", "detected yoy pattern in alias/expression"
+    if DERIVED_MOM_RE.search(alias_l) or DERIVED_MOM_RE.search(text):
+        return "mom", "detected mom pattern in alias/expression"
+    if DERIVED_YTD_RE.search(alias_l) or DERIVED_YTD_RE.search(text):
+        return "ytd", "detected ytd pattern in alias/expression"
+    return None, "no derived metric pattern"
+
+
+def guess_base_metric(name: str, dtype: str) -> Optional[str]:
+    alias = normalize_name(name)
+    suffix = f"_{dtype}"
+    prefix = f"{dtype}_"
+
+    if alias.endswith(suffix):
+        base = alias[: -len(suffix)].strip("_")
+        return base or None
+    if alias.startswith(prefix):
+        base = alias[len(prefix) :].strip("_")
+        return base or None
+    return None
+
+
+def infer_derived_metrics(fields: List[Dict]) -> List[Dict]:
+    out: List[Dict] = []
+    for field in fields:
+        if field.get("role") != "metric":
+            continue
+        dtype, reason = infer_derived_type(str(field.get("name", "")), str(field.get("expression", "")))
+        if not dtype:
+            continue
+        out.append(
+            {
+                "name": field.get("name"),
+                "type": dtype,
+                "base_metric": guess_base_metric(str(field.get("name", "")), dtype),
+                "expression": field.get("expression", ""),
+                "source": "inferred",
+                "reason": reason,
+            }
+        )
+    return out
+
+
+def normalize_derived_overrides(raw: Any) -> List[Dict]:
+    if not isinstance(raw, list):
+        return []
+
+    out: List[Dict] = []
+    for item in raw:
+        if isinstance(item, str):
+            out.append({"name": item, "type": item, "source": "override", "reason": "manual override"})
+            continue
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        dtype = str(item.get("type", "")).strip().lower()
+        if not name or not dtype:
+            continue
+        out.append(
+            {
+                "name": name,
+                "type": dtype,
+                "base_metric": item.get("base_metric"),
+                "expression": item.get("expression", ""),
+                "source": "override",
+                "reason": "manual override",
+            }
+        )
+    return out
+
+
+def merge_derived_metrics(inferred: List[Dict], overrides: List[Dict]) -> List[Dict]:
+    merged: Dict[str, Dict] = {}
+    for item in inferred:
+        key = normalize_name(str(item.get("name", "")))
+        if key:
+            merged[key] = item
+    for item in overrides:
+        key = normalize_name(str(item.get("name", "")))
+        if key:
+            merged[key] = item
+    return list(merged.values())
+
+
+def apply_semantic_overrides(fields: List[Dict], override: Dict[str, Any]) -> None:
+    if not override:
+        return
+
+    field_roles = parse_mapping(override.get("field_roles"))
+    metric_roles = parse_mapping(override.get("metric_roles"))
+
+    raw_time_field = override.get("time_field")
+    time_fields_override = set()
+    if isinstance(raw_time_field, str) and raw_time_field.strip():
+        time_fields_override.add(normalize_name(raw_time_field))
+    elif isinstance(raw_time_field, list):
+        time_fields_override = {normalize_name(str(v)) for v in raw_time_field if str(v).strip()}
+
+    for field in fields:
+        name_key = normalize_name(str(field.get("name", "")))
+        source_key = normalize_name(str(field.get("source_name", "")))
+
+        role_override = field_roles.get(name_key) or field_roles.get(source_key)
+        if role_override:
+            field["role"] = role_override
+            field["role_source"] = "override"
+            field["role_reason"] = "manual field role override"
+            field["role_confidence"] = 1.0
+
+        if name_key in time_fields_override or source_key in time_fields_override:
+            field["role"] = "time"
+            field["role_source"] = "override"
+            field["role_reason"] = "manual time_field override"
+            field["role_confidence"] = 1.0
+            if normalize_grain(override.get("grain")) != "unknown":
+                field["time_grain"] = normalize_grain(override.get("grain"))
+                field["time_grain_source"] = "override"
+                field["time_grain_reason"] = "manual grain override"
+
+        metric_override = metric_roles.get(name_key) or metric_roles.get(source_key)
+        if metric_override:
+            field["role"] = "metric"
+            field["metric_role"] = metric_override
+            field["metric_role_source"] = "override"
+            field["metric_role_reason"] = "manual metric role override"
+            field["role_source"] = "override"
+            field["role_reason"] = "manual metric role override"
+            field["role_confidence"] = 1.0
 
 def to_field_name(expr: str) -> str:
     cleaned = expr.strip().strip("()")
@@ -715,21 +999,54 @@ def infer_query_semantics(query: Dict) -> Dict:
     sql = query.get("sql", "")
     select_clause = extract_select_clause(sql)
     items = split_select_items(select_clause)
+    override = parse_semantic_override(query)
 
     fields: List[Dict] = []
     for idx, item in enumerate(items, start=1):
         alias = extract_alias(item, idx)
-        role = detect_role(alias, item)
+        metric_role, metric_reason, metric_confidence = detect_metric_role(alias, item)
+        role, role_reason, role_confidence = detect_role(alias, item, metric_role)
+        time_grain, time_reason, time_confidence = detect_time_grain(alias, item)
         fields.append(
             {
                 "name": alias,
+                "source_name": to_field_name(item),
                 "expression": item,
                 "role": role,
                 "is_aggregate": bool(AGG_RE.search(item)),
+                "role_reason": role_reason,
+                "role_confidence": role_confidence,
+                "role_source": "inferred",
+                "metric_role": metric_role,
+                "metric_role_reason": metric_reason,
+                "metric_role_confidence": metric_confidence,
+                "metric_role_source": "inferred" if metric_role is not None else "n/a",
+                "time_grain": time_grain if role == "time" else "unknown",
+                "time_grain_reason": time_reason if role == "time" else "",
+                "time_grain_confidence": time_confidence if role == "time" else 0.0,
+                "time_grain_source": "inferred" if role == "time" else "n/a",
             }
         )
 
+    apply_semantic_overrides(fields, override)
+
     grain = detect_grain(fields)
+    time_grain, time_grain_reason = infer_query_time_grain(fields)
+    time_grain_source = "inferred"
+    manual_grain = normalize_grain(override.get("time_grain") or override.get("grain"))
+    if manual_grain != "unknown":
+        time_grain = manual_grain
+        time_grain_reason = "manual grain override"
+        time_grain_source = "override"
+
+    grain_hint = grain
+    if grain == "time_series" and time_grain != "unknown":
+        grain_hint = f"time_series:{time_grain}"
+
+    inferred_derived = infer_derived_metrics(fields)
+    override_derived = normalize_derived_overrides(override.get("derived_metrics"))
+    derived_metrics = merge_derived_metrics(inferred_derived, override_derived)
+
     dsl_filters = extract_dsl_filters(sql)
     dsl_filter_fields = [f["field"] for f in dsl_filters]
 
@@ -737,11 +1054,17 @@ def infer_query_semantics(query: Dict) -> Dict:
         "id": query.get("id"),
         "title": query.get("title", ""),
         "grain": grain,
+        "grain_hint": grain_hint,
+        "time_grain": time_grain,
+        "time_grain_reason": time_grain_reason,
+        "time_grain_source": time_grain_source,
         "field_count": len(fields),
         "fields": fields,
         "metrics": [f["name"] for f in fields if f["role"] == "metric"],
         "dimensions": [f["name"] for f in fields if f["role"] == "dimension"],
         "time_fields": [f["name"] for f in fields if f["role"] == "time"],
+        "derived_metrics": derived_metrics,
+        "semantic_override_applied": bool(override),
         "dsl_filters": dsl_filters,
         "dsl_filter_fields": dsl_filter_fields,
     }
