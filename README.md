@@ -50,12 +50,14 @@ python -m pip install -r services/backend/requirements.txt
 Default ports:
 - backend: `127.0.0.1:18000`
 - frontend: `127.0.0.1:15173`
+- skill-agent (LangChain + SSE): `127.0.0.1:18100`
 
 Start:
 
 ```bash
 bash services/start_backend.sh
 bash services/start_frontend.sh
+bash services/start_skill_agent.sh
 ```
 
 Behavior:
@@ -130,6 +132,35 @@ npm --prefix tests/e2e install
 python -m unittest tests/integration/test_sqlmd_to_frontend_e2e.py
 ```
 
+Skill-agent stream integration test:
+
+```bash
+python -m pip install -r services/skill_agent/requirements.txt
+python -m unittest tests/integration/test_skill_agent_stream.py
+```
+
+## Skill Agent HTTP Stream
+
+Run:
+
+```bash
+python -m pip install -r services/skill_agent/requirements.txt
+bash services/start_skill_agent.sh
+```
+
+Stream call example (`text/event-stream` / SSE):
+
+```bash
+curl -N -X POST "http://127.0.0.1:18100/api/v1/skills/stream" \
+  -H "Content-Type: application/json" \
+  -H "Accept: text/event-stream" \
+  -d '{
+    "prompt":"请先构建 BI dashboard，再给出业务分析计划",
+    "skills":["sql-to-bi-builder","starrocks-mcp-analyst"],
+    "sql_md_path":"/Users/lyg/software/sql2bi/sample.sql.md"
+  }'
+```
+
 ## Git Hooks
 
 Install repo hooks:
@@ -141,3 +172,40 @@ bash scripts/install-git-hooks.sh
 Hooks:
 - `pre-commit`: conflict markers, shell/python syntax, requirement pin checks
 - `pre-push`: smoke pipeline run on `sample.sql.md`
+
+## Project Intro Website (Free)
+
+This repo now includes a static project intro site in `website/`:
+- `website/index.html`
+- `website/styles.css`
+- `website/main.js`
+
+Local preview:
+
+```bash
+python3 -m http.server 8080 --directory website
+```
+
+Then open:
+- `http://127.0.0.1:8080`
+
+### Free Deploy Option A: GitHub Pages
+
+This repo includes workflow:
+- `.github/workflows/deploy-website-pages.yml`
+
+Behavior:
+- Trigger on push to `main` when `website/**` changes
+- Upload `website/` as Pages artifact
+- Deploy automatically to GitHub Pages
+
+One-time setup:
+1. In repository settings, open **Pages**.
+2. Set **Build and deployment / Source** to **GitHub Actions**.
+3. Push changes to `website/` on `main` (or run workflow manually via **Actions** tab).
+
+### Free Deploy Option B: Cloudflare Pages
+
+1. Connect your repository to Cloudflare Pages.
+2. Set build command as empty, output directory as `website`.
+3. Deploy and bind your domain if needed (free SSL included).

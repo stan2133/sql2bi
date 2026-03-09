@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta
+    name="description"
+    content="SQL2BI: 将 sql.md 自动转换为可运行 BI 原型，覆盖语义推断、图表推荐、看板生成与前后端联调。"
+  />
+  <title>SQL2BI | 从 SQL 到 BI 看板</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link
+    href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;700;900&family=IBM+Plex+Mono:wght@400;600&display=swap"
+    rel="stylesheet"
+  />
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <div class="bg-glow bg-glow-a" aria-hidden="true"></div>
+  <div class="bg-glow bg-glow-b" aria-hidden="true"></div>
+
+  <header class="site-header">
+    <div class="brand">SQL2BI</div>
+    <a class="ghost-link" href="https://github.com/your-org/sql2bi" target="_blank" rel="noreferrer">GitHub</a>
+  </header>
+
+  <main>
+    <section class="hero">
+      <p class="eyebrow">Free Open-Source Project Landing</p>
+      <h1>把 SQL 资产，直接变成可运行 BI 原型</h1>
+      <p class="hero-copy">
+        SQL2BI 用流水线方式把 <code>sql.md</code> 转成可交互看板，覆盖 SQL 解析、语义推断、图表推荐、Dashboard 规范生成与服务联调。
+      </p>
+      <div class="hero-cta">
+        <a class="btn btn-primary" href="#quickstart">3 分钟上手</a>
+        <a class="btn btn-secondary" href="#deploy">免费发布</a>
+      </div>
+      <div class="hero-metrics">
+        <div class="metric">
+          <div class="metric-value">8+</div>
+          <div class="metric-label">处理阶段</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">2</div>
+          <div class="metric-label">前端模式</div>
+        </div>
+        <div class="metric">
+          <div class="metric-value">0</div>
+          <div class="metric-label">部署成本</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" id="capabilities">
+      <h2>核心能力</h2>
+      <div class="grid cards">
+        <article class="card">
+          <h3>SQL 语义建模</h3>
+          <p>解析多段 SQL，抽取指标、维度、过滤器，沉淀语义目录。</p>
+        </article>
+        <article class="card">
+          <h3>图表与布局自动推荐</h3>
+          <p>根据字段类型与业务语义给出图表类型和 dashboard 组件排布。</p>
+        </article>
+        <article class="card">
+          <h3>前后端一体联调</h3>
+          <p>自动产出可运行服务，支持 FastAPI 全量模式和 Lite 回退模式。</p>
+        </article>
+        <article class="card">
+          <h3>审计可追溯</h3>
+          <p>每次查询和 SQL 执行结果可审计，产物落盘到 <code>audit/</code>。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="panel" id="architecture">
+      <h2>架构流程</h2>
+      <ol class="pipeline">
+        <li><span>01</span> 读取 <code>sql.md</code> 多 SQL 块</li>
+        <li><span>02</span> 解析查询并推断语义</li>
+        <li><span>03</span> 生成图表计划与看板规范</li>
+        <li><span>04</span> 启动后端 API 与前端可视化</li>
+        <li><span>05</span> 输出 <code>out/</code> 与 <code>audit/</code> 工件</li>
+      </ol>
+    </section>
+
+    <section class="panel" id="quickstart">
+      <h2>快速开始</h2>
+      <p>以下命令可在本地启动完整体验。</p>
+      <div class="code-block">
+        <button class="copy-btn" data-copy-target="quickstart-cmd">复制</button>
+        <pre id="quickstart-cmd"><code>bash services/start_backend.sh
+bash services/start_frontend.sh
+bash services/start_skill_agent.sh</code></pre>
+      </div>
+      <div class="link-row">
+        <a href="http://127.0.0.1:15173" target="_blank" rel="noreferrer">打开前端</a>
+        <a href="http://127.0.0.1:18000/api/health" target="_blank" rel="noreferrer">检查后端健康</a>
+      </div>
+    </section>
+
+    <section class="panel" id="deploy">
+      <h2>免费部署方案</h2>
+      <div class="grid deploy-cards">
+        <article class="card">
+          <h3>GitHub Pages（推荐）</h3>
+          <p>适合仓库内静态介绍页，零成本、配置简单、可直接绑定仓库分支。</p>
+          <ul>
+            <li>将本目录作为 Pages 发布源</li>
+            <li>默认免费 HTTPS</li>
+            <li>适合项目说明与文档站</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>Cloudflare Pages</h3>
+          <p>全球 CDN 更快，仍然免费，支持直接从 Git 自动部署。</p>
+          <ul>
+            <li>连仓库后自动构建</li>
+            <li>自定义域名和 SSL 免费</li>
+            <li>适合需要更快首屏访问</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+  </main>
+
+  <footer class="site-footer">
+    <span>SQL2BI Project</span>
+    <span id="year"></span>
+  </footer>
+
+  <script src="./main.js"></script>
+</body>
+</html>
