@@ -1,5 +1,9 @@
 # SQL2BI Workspace
 
+中文使用文档（聚焦两个 skills 的实操）：
+- [USAGE.zh-CN.md](./USAGE.zh-CN.md)
+- [PROMPT-TEMPLATE.zh-CN.md](./PROMPT-TEMPLATE.zh-CN.md)
+
 Turn `sql.md` (multiple SQL blocks in markdown) into a runnable BI prototype:
 - SQL parsing
 - semantic inference
@@ -15,7 +19,7 @@ Turn `sql.md` (multiple SQL blocks in markdown) into a runnable BI prototype:
   - full mode: FastAPI + DuckDB + Polars + Pandas (`services/backend/app.py`)
   - lite mode: stdlib HTTP fallback (`services/backend/app_lite.py`)
 - Frontend service:
-  - full mode: React + Vite + ECharts (`services/frontend`)
+  - full mode: React + Vite + ECharts + Theme Studio (`services/frontend`)
   - lite mode: static HTML/JS + ECharts CDN (`services/frontend-lite`)
 - Test fixtures:
   - SQL markdown: `testdata/sql/demo.sql.md`

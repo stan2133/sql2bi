@@ -132,6 +132,26 @@ def main() -> None:
     dashboard = {
         "version": "0.1.0",
         "name": "SQL Generated Dashboard",
+        "ui": {
+            "theme": {
+                "name": "studio_sky",
+                "font_family": '"Source Sans 3", "Noto Sans SC", sans-serif',
+                "app_bg": "#f5f7fb",
+                "canvas_bg": "#eef2ff",
+                "panel_bg": "#ffffff",
+                "line_soft": "#dce4f3",
+                "line_strong": "#c7d4ec",
+                "text_main": "#0f172a",
+                "text_sub": "#334155",
+                "text_mute": "#64748b",
+                "brand": "#0ea5e9",
+                "brand_weak": "#e0f2fe",
+                "radius_sm": 8,
+                "radius_md": 14,
+                "card_shadow": "0 10px 28px rgba(15, 23, 42, 0.08)",
+            },
+            "chart_palette": ["#0ea5e9", "#f59e0b", "#14b8a6", "#f43f5e", "#8b5cf6"],
+        },
         "grid": {"columns": GRID_COLS, "rowHeight": 1},
         "pages": [
             {
