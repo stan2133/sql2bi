@@ -48,6 +48,19 @@ def main() -> None:
     parser.add_argument("--semantics", required=True, help="Path to semantic_catalog.json")
     parser.add_argument("--charts", required=True, help="Path to chart_plan.json")
     parser.add_argument("--output", required=True, help="Path to dashboard.json")
+    parser.add_argument(
+        "--with-ui-theme",
+        dest="with_ui_theme",
+        action="store_true",
+        help="Inject default ui.theme + chart_palette into dashboard.json (default)",
+    )
+    parser.add_argument(
+        "--without-ui-theme",
+        dest="with_ui_theme",
+        action="store_false",
+        help="Skip ui defaults; emit a semantic/structure-only dashboard.json",
+    )
+    parser.set_defaults(with_ui_theme=True)
     args = parser.parse_args()
 
     queries = json.loads(Path(args.queries).read_text(encoding="utf-8")).get("queries", [])
@@ -132,7 +145,19 @@ def main() -> None:
     dashboard = {
         "version": "0.1.0",
         "name": "SQL Generated Dashboard",
-        "ui": {
+        "grid": {"columns": GRID_COLS, "rowHeight": 1},
+        "pages": [
+            {
+                "id": "page_main",
+                "title": "Overview",
+                "global_filters": global_filters,
+                "widgets": widgets,
+            }
+        ],
+    }
+
+    if args.with_ui_theme:
+        dashboard["ui"] = {
             "theme": {
                 "name": "studio_sky",
                 "font_family": '"Source Sans 3", "Noto Sans SC", sans-serif',
@@ -151,23 +176,16 @@ def main() -> None:
                 "card_shadow": "0 10px 28px rgba(15, 23, 42, 0.08)",
             },
             "chart_palette": ["#0ea5e9", "#f59e0b", "#14b8a6", "#f43f5e", "#8b5cf6"],
-        },
-        "grid": {"columns": GRID_COLS, "rowHeight": 1},
-        "pages": [
-            {
-                "id": "page_main",
-                "title": "Overview",
-                "global_filters": global_filters,
-                "widgets": widgets,
-            }
-        ],
-    }
+        }
 
     out_path = Path(args.output)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(json.dumps(dashboard, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    print(f"Built dashboard spec with {len(widgets)} widgets -> {out_path}")
+    print(
+        f"Built dashboard spec with {len(widgets)} widgets"
+        f" (with_ui_theme={args.with_ui_theme}) -> {out_path}"
+    )
 
 
 if __name__ == "__main__":

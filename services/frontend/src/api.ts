@@ -12,13 +12,20 @@ export class Sql2BiApi {
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const res = await fetch(`${this.baseUrl}${path}`, {
-      headers: {
-        'Content-Type': 'application/json',
-        ...(init?.headers || {})
-      },
-      ...init
-    })
+    let res: Response
+
+    try {
+      res = await fetch(`${this.baseUrl}${path}`, {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(init?.headers || {})
+        },
+        ...init
+      })
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`BACKEND_UNREACHABLE ${this.baseUrl}: ${reason}`)
+    }
 
     if (!res.ok) {
       const text = await res.text()

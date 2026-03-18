@@ -35,11 +35,13 @@ body {
 }
 
 .app-root.theme-dark .top-toolbar {
+  background: var(--bg-panel);
   background: color-mix(in srgb, var(--bg-panel) 92%, black 8%);
 }
 
 .app-root.theme-dark .left-pane,
 .app-root.theme-dark .right-pane {
+  background: var(--bg-panel);
   background: color-mix(in srgb, var(--bg-panel) 94%, black 6%);
 }
 
@@ -53,12 +55,14 @@ body {
   z-index: 5;
   height: 56px;
   border-bottom: 1px solid var(--line-soft);
+  background: var(--bg-panel);
   background: color-mix(in srgb, var(--bg-panel) 88%, white 12%);
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: 0 12px;
   gap: 10px;
+  -webkit-backdrop-filter: blur(8px);
   backdrop-filter: blur(8px);
 }
 
@@ -137,6 +141,7 @@ button:disabled {
 
 .left-pane,
 .right-pane {
+  background: var(--bg-panel);
   background: color-mix(in srgb, var(--bg-panel) 93%, white 7%);
   padding: 12px;
   overflow: auto;
@@ -153,6 +158,7 @@ button:disabled {
 .center-pane {
   padding: 12px;
   overflow: auto;
+  background: var(--bg-app);
   background: radial-gradient(760px 280px at 10% 0%, var(--brand-glow), transparent 72%),
     linear-gradient(180deg, color-mix(in srgb, var(--bg-canvas) 70%, white 30%), var(--bg-app));
 }
@@ -207,6 +213,31 @@ button:disabled {
   color: var(--text-mute);
 }
 
+.status-banner {
+  margin-bottom: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: var(--bg-panel);
+  padding: 10px 12px;
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.status-banner.warning {
+  border-color: #f59e0b;
+  background: color-mix(in srgb, var(--bg-panel) 86%, #fef3c7 14%);
+}
+
+.status-banner code {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 12px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  border: 1px dashed var(--line-strong);
+  background: color-mix(in srgb, var(--bg-panel) 88%, white 12%);
+}
+
 .kpi-strip {
   margin-bottom: 10px;
   display: grid;
@@ -218,6 +249,7 @@ button:disabled {
   text-align: left;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
+  background: var(--bg-panel);
   background: linear-gradient(140deg, color-mix(in srgb, var(--bg-panel) 94%, white 6%), color-mix(in srgb, var(--brand-weak) 20%, var(--bg-panel) 80%));
   padding: 8px 10px;
   display: grid;
@@ -259,7 +291,6 @@ button:disabled {
 }
 
 .grid-canvas.focus-mode .widget {
-  grid-column: 1 / span 12 !important;
   min-height: 420px;
 }
 
@@ -306,6 +337,7 @@ button:disabled {
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
   overflow: hidden;
+  background: var(--bg-panel);
   background: color-mix(in srgb, var(--bg-panel) 86%, var(--brand-weak) 14%);
 }
 

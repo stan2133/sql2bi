@@ -49,9 +49,14 @@ cd sql2bi
 ### 4.1 启动服务
 
 ```bash
+# 终端 A
 bash services/start_backend.sh
+
+# 终端 B
 bash services/start_frontend.sh
 ```
+
+如果先开前端，页面现在会给出“backend not reachable”的明确提示，不再只有 `Load failed`。
 
 默认地址：
 - 后端：`http://127.0.0.1:18000`
@@ -69,12 +74,13 @@ curl -X POST http://127.0.0.1:18000/api/v1/import/sql-md \
   -d '{"sql_md_path":"/绝对路径/sql.md"}'
 ```
 
-示例（仓库内 demo）：
+示例（仓库内 demo，建议使用绝对路径）：
 
 ```bash
+# 把 <repo_root> 替换成你本地 sql2bi 仓库绝对路径
 curl -X POST http://127.0.0.1:18000/api/v1/import/sql-md \
   -H 'Content-Type: application/json' \
-  -d '{"sql_md_path":"/Users/bamboo/sql2bi/testdata/sql/demo.sql.md"}'
+  -d '{"sql_md_path":"<repo_root>/testdata/sql/demo.sql.md"}'
 ```
 
 导入成功后，后端会自动产出：
@@ -168,6 +174,8 @@ python3 skills/sql-to-bi-builder/scripts/parse_sql_md.py --input /绝对路径/s
 python3 skills/sql-to-bi-builder/scripts/infer_semantics.py --input /tmp/out/query_catalog.json --output /tmp/out/semantic_catalog.json
 python3 skills/sql-to-bi-builder/scripts/recommend_chart.py --input /tmp/out/semantic_catalog.json --query-catalog /tmp/out/query_catalog.json --output /tmp/out/chart_plan.json
 python3 skills/sql-to-bi-builder/scripts/build_dashboard_spec.py --queries /tmp/out/query_catalog.json --semantics /tmp/out/semantic_catalog.json --charts /tmp/out/chart_plan.json --output /tmp/out/dashboard.json
+# 若只想要语义/结构，不注入默认 UI 主题：
+python3 skills/sql-to-bi-builder/scripts/build_dashboard_spec.py --queries /tmp/out/query_catalog.json --semantics /tmp/out/semantic_catalog.json --charts /tmp/out/chart_plan.json --output /tmp/out/dashboard.min.json --without-ui-theme
 ```
 
 ### 5.4 过滤器参数语法（前后端共用）
@@ -288,10 +296,10 @@ bash services/start_backend.sh
 # 2) 启动前端
 bash services/start_frontend.sh
 
-# 3) 导入示例 SQL
+# 3) 导入示例 SQL（把 <repo_root> 换成你的本地绝对路径）
 curl -X POST http://127.0.0.1:18000/api/v1/import/sql-md \
   -H 'Content-Type: application/json' \
-  -d '{"sql_md_path":"/Users/bamboo/sql2bi/testdata/sql/demo.sql.md"}'
+  -d '{"sql_md_path":"<repo_root>/testdata/sql/demo.sql.md"}'
 
 # 4) 查看当前 dashboard
 curl http://127.0.0.1:18000/api/v1/dashboard/current
