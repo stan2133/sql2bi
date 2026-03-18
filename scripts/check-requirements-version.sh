@@ -23,7 +23,7 @@ is_pinned_line() {
 extract_pyyaml_version() {
   local file="$1"
   local version
-  version="$(rg '^PyYAML==[0-9][0-9A-Za-z._+-]*$' "$file" -o | sed -E 's/^PyYAML==//' | head -n1 || true)"
+  version="$(grep -E '^PyYAML==[0-9][0-9A-Za-z._+-]*$' "$file" | sed -E 's/^PyYAML==//' | head -n1 || true)"
   echo "$version"
 }
 
@@ -54,7 +54,7 @@ elif [[ "$root_pyyaml" != "$skill_pyyaml" ]]; then
 fi
 
 if [[ -n "$root_pyyaml" ]]; then
-  if ! rg -n "PyYAML==$root_pyyaml" pyproject.toml >/dev/null 2>&1; then
+  if ! grep -nF "PyYAML==$root_pyyaml" pyproject.toml >/dev/null 2>&1; then
     echo "[requirements-check] pyproject.toml dev dependency must pin PyYAML==$root_pyyaml" >&2
     fail=1
   fi

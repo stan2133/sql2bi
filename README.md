@@ -1,5 +1,9 @@
 # SQL2BI Workspace
 
+中文使用文档（聚焦两个 skills 的实操）：
+- [USAGE.zh-CN.md](./USAGE.zh-CN.md)
+- [PROMPT-TEMPLATE.zh-CN.md](./PROMPT-TEMPLATE.zh-CN.md)
+
 Turn `sql.md` (multiple SQL blocks in markdown) into a runnable BI prototype:
 - SQL parsing
 - semantic inference
@@ -15,7 +19,7 @@ Turn `sql.md` (multiple SQL blocks in markdown) into a runnable BI prototype:
   - full mode: FastAPI + DuckDB + Polars + Pandas (`services/backend/app.py`)
   - lite mode: stdlib HTTP fallback (`services/backend/app_lite.py`)
 - Frontend service:
-  - full mode: React + Vite + ECharts (`services/frontend`)
+  - full mode: React + Vite + ECharts + Theme Studio (`services/frontend`)
   - lite mode: static HTML/JS + ECharts CDN (`services/frontend-lite`)
 - Test fixtures:
   - SQL markdown: `testdata/sql/demo.sql.md`
@@ -55,10 +59,15 @@ Default ports:
 Start:
 
 ```bash
+# terminal A
 bash services/start_backend.sh
+
+# terminal B
 bash services/start_frontend.sh
 bash services/start_skill_agent.sh
 ```
+
+If frontend starts before backend, the UI now shows a clear backend-not-reachable hint (instead of only `Load failed`).
 
 Behavior:
 - If backend Python deps are installed, backend runs in full mode.
@@ -81,7 +90,7 @@ Generated files:
 - `query_catalog.json`
 - `semantic_catalog.json` (includes `dsl_filters`)
 - `chart_plan.json`
-- `dashboard.json` (includes page-level `global_filters`)
+- `dashboard.json` (includes page-level `global_filters`, plus default `ui` unless `--without-ui-theme` is used)
 - `ui/` static scaffold
 - `services/` generated service bundle
 
@@ -107,9 +116,10 @@ Query data API now executes stored SQL against configured datasource (read-only 
 Example import:
 
 ```bash
+# Use an absolute path; replace <repo_root> with your local clone path.
 curl -X POST http://127.0.0.1:18000/api/v1/import/sql-md \
   -H 'Content-Type: application/json' \
-  -d '{"sql_md_path":"/Users/lyg/software/sql2bi/testdata/sql/demo.sql.md"}'
+  -d '{"sql_md_path":"<repo_root>/testdata/sql/demo.sql.md"}'
 ```
 
 ## Integration Tests
@@ -172,6 +182,19 @@ bash scripts/install-git-hooks.sh
 Hooks:
 - `pre-commit`: conflict markers, shell/python syntax, requirement pin checks
 - `pre-push`: smoke pipeline run on `sample.sql.md`
+
+## Unit Tests (minimal)
+
+Run script-level unit tests:
+
+```bash
+python3 -m unittest discover -s tests -p 'test_*.py'
+```
+
+Current coverage focus:
+- `skills/sql-to-bi-builder/scripts/build_dashboard_spec.py`
+  - helper behavior (`unique_keep_order`, `next_position`)
+  - CLI toggle behavior (`--with-ui-theme` / `--without-ui-theme`)
 
 ## Project Intro Website (Free)
 

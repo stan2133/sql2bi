@@ -4,10 +4,30 @@ set -euo pipefail
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR"
 
+# Keep bytecode cache in a writable temp dir to avoid sandbox/macOS cache permission errors.
+if [[ -z "${PYTHONPYCACHEPREFIX:-}" ]]; then
+  export PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/sql2bi-pycache"
+fi
+mkdir -p "$PYTHONPYCACHEPREFIX" 2>/dev/null || true
+
 # Prevent committing unresolved merge markers.
-if rg -n "^(<<<<<<<|=======|>>>>>>>)" --glob '!*.lock' >/dev/null 2>&1; then
-  echo "[pre-commit] Found unresolved merge conflict markers." >&2
-  exit 1
+merge_marker_re='^(<<<<<<< .+|=======|>>>>>>> .+)$'
+if command -v rg >/dev/null 2>&1; then
+  if rg -n "$merge_marker_re" --glob '!*.lock' >/dev/null 2>&1; then
+    echo "[pre-commit] Found unresolved merge conflict markers." >&2
+    exit 1
+  fi
+else
+  if grep -RInE "$merge_marker_re" \
+    --exclude='*.lock' \
+    --exclude-dir='.git' \
+    --exclude-dir='node_modules' \
+    --exclude-dir='.venv' \
+    --exclude-dir='__pycache__' \
+    . >/dev/null 2>&1; then
+    echo "[pre-commit] Found unresolved merge conflict markers." >&2
+    exit 1
+  fi
 fi
 
 # Validate shell script syntax.

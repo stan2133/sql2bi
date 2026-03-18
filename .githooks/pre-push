@@ -4,6 +4,12 @@ set -euo pipefail
 ROOT_DIR="$(git rev-parse --show-toplevel)"
 cd "$ROOT_DIR"
 
+# Keep bytecode cache in a writable temp dir to avoid sandbox/macOS cache permission errors.
+if [[ -z "${PYTHONPYCACHEPREFIX:-}" ]]; then
+  export PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/sql2bi-pycache"
+fi
+mkdir -p "$PYTHONPYCACHEPREFIX" 2>/dev/null || true
+
 "$ROOT_DIR/.githooks/pre-commit"
 
 if ! command -v python3 >/dev/null 2>&1; then
@@ -41,5 +47,9 @@ for f in query_catalog.json semantic_catalog.json chart_plan.json dashboard.json
     exit 1
   fi
 done
+
+if [[ -d "$ROOT_DIR/tests" ]]; then
+  python3 -m unittest discover -s "$ROOT_DIR/tests" -p 'test_*.py'
+fi
 
 echo "[pre-push] checks passed"

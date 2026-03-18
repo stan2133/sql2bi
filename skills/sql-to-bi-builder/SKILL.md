@@ -120,6 +120,13 @@ bash /abs/path/out/services/start_frontend.sh
 - `services/frontend`: Frontend service consuming backend API.
 - `services/start_backend.sh` and `services/start_frontend.sh`: service start scripts.
 
+### UI Upgrade Notes (2026-03)
+When using repo-level service UI (`services/frontend`), the upgraded experience includes:
+- KPI summary strip (click-to-focus widgets)
+- Layout switch (`Classic` / `Focus`)
+- New `Midnight Ops` theme preset
+- stronger visual hierarchy for demos
+
 ## Heuristic References
 Load only the file needed for the current issue:
 - SQL parsing and naming constraints: `references/sql_style.md`

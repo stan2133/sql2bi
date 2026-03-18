@@ -31,9 +31,33 @@ export type DashboardPage = {
   widgets: WidgetSpec[]
 }
 
+export type ThemeSpec = {
+  name?: string
+  font_family?: string
+  app_bg?: string
+  canvas_bg?: string
+  panel_bg?: string
+  line_soft?: string
+  line_strong?: string
+  text_main?: string
+  text_sub?: string
+  text_mute?: string
+  brand?: string
+  brand_weak?: string
+  radius_sm?: number
+  radius_md?: number
+  card_shadow?: string
+}
+
+export type UiSpec = {
+  theme?: ThemeSpec
+  chart_palette?: string[]
+}
+
 export type DashboardSpec = {
   version: string
   name: string
+  ui?: UiSpec
   grid: { columns: number; rowHeight: number }
   pages: DashboardPage[]
 }
