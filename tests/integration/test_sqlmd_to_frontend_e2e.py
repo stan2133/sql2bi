@@ -98,18 +98,22 @@ class SqlMdToFrontendE2EIntegrationTest(unittest.TestCase):
     @classmethod
     def _wait_until_ready(cls) -> None:
         deadline = time.time() + 30
+        last_error = ""
         while time.time() < deadline:
             if cls.process.poll() is not None:
                 break
-            status, payload = _http_json("GET", f"{cls.base_url}/api/health", timeout=2.0)
-            if status == 200 and payload.get("status") == "ok":
-                return
+            try:
+                status, payload = _http_json("GET", f"{cls.base_url}/api/health", timeout=2.0)
+                if status == 200 and payload.get("status") == "ok":
+                    return
+            except Exception as exc:  # pragma: no cover
+                last_error = str(exc)
             time.sleep(0.3)
 
         output = ""
         if cls.process.stdout:
             output = cls.process.stdout.read()
-        raise RuntimeError(f"[backend-startup] failed to start backend\n{output}")
+        raise RuntimeError(f"[backend-startup] failed to start backend last_error={last_error}\n{output}")
 
     def _parse_last_json_line(self, output: str) -> dict:
         for line in reversed([l.strip() for l in output.splitlines() if l.strip()]):

@@ -99,10 +99,22 @@ Generated files:
 - `GET /api/v1/dashboard/current`
 - `GET /api/v1/filters`
 - `GET /api/v1/queries/{query_id}/data?include_filters=true&field=value`
+- `GET /api/v1/queries/{query_id}/export.csv?include_filters=true&field=value`
+- `POST /api/v1/reports/query/{query_id}` with body:
+  - `{"theme":"growth-acquisition","version":"v20260311.001","filters":{"country":"CN"},"include_csv":true,"chart_png_data_url":"data:image/png;base64,..."}`
 
 Query data API now executes stored SQL against configured datasource (read-only only), and persists audit artifacts to:
 - `audit/<session_id>/sql.md`
 - `audit/<session_id>/sql/<query_id>.sql`
+- `audit/<session_id>/sql_audit_report.json`
+
+Report generation API persists versioned report artifacts to:
+- `reports/<theme>/<version>/report.md`
+- `reports/<theme>/<version>/report.json`
+- `reports/<theme>/<version>/analysis_trace.md`
+- `reports/<theme>/<version>/evidence_index.json`
+- `reports/<theme>/<version>/metadata.json`
+- optional exports under `reports/<theme>/<version>/exports/` and `reports/<theme>/<version>/charts/`
 
 Example import:
 
@@ -117,6 +129,7 @@ curl -X POST http://127.0.0.1:18000/api/v1/import/sql-md \
 Current backend integration tests cover:
 - `sql.md` import -> query execution -> session SQL audit files persistence
 - read-only SQL guard (DDL is blocked)
+- CSV export + versioned report artifact persistence
 - end-to-end path: `sql.md -> pipeline -> backend API -> frontend-lite DOM render`
 
 Run with Python 3.12 environment:

@@ -117,6 +117,12 @@ button:hover {
   font-weight: 700;
 }
 
+.session-chip {
+  margin-bottom: 8px;
+  font-size: 11px;
+  color: var(--text-mute);
+}
+
 .filter-card {
   border: 1px solid var(--line-soft);
   border-radius: var(--radius-sm);
@@ -135,6 +141,35 @@ button:hover {
 .hint {
   font-size: 11px;
   color: var(--text-mute);
+}
+
+.export-card {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-sm);
+  background: #fff;
+  padding: 8px;
+  margin-bottom: 12px;
+  display: grid;
+  gap: 8px;
+}
+
+.export-card label {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.export-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.report-meta {
+  display: grid;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-sub);
+  word-break: break-all;
 }
 
 .headline {

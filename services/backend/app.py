@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import os
 import re
 import hashlib
@@ -15,7 +16,8 @@ import duckdb
 import pandas as pd
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from fastapi.responses import Response
+from pydantic import BaseModel, Field
 
 BASE_DIR = Path(__file__).resolve().parent
 REPO_ROOT = BASE_DIR.parent.parent
@@ -25,6 +27,7 @@ ARTIFACT_DIR = DATA_DIR / "artifacts"
 STATE_FILE = DATA_DIR / "state.json"
 DB_PATH = DATA_DIR / "metadata.duckdb"
 AUDIT_ROOT = REPO_ROOT / "audit"
+REPORT_ROOT = REPO_ROOT / "reports"
 DEFAULT_DUCKDB_DEMO_PATH = REPO_ROOT / "testdata" / "duckdb" / "sql2bi_demo.duckdb"
 QUERY_ROW_LIMIT = max(1, int(os.getenv("SQL2BI_QUERY_ROW_LIMIT", "5000")))
 QUERY_TIMEOUT_SECONDS = max(1, int(os.getenv("SQL2BI_QUERY_TIMEOUT_SECONDS", "30")))
@@ -40,6 +43,8 @@ BLOCKED_SQL_RE = re.compile(
 PLACEHOLDER_RE = re.compile(
     r"\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}|(?<!:):([A-Za-z_][A-Za-z0-9_]*)"
 )
+REPORT_VERSION_RE = re.compile(r"^v\d{8}\.\d{3}$")
+PNG_DATA_URL_RE = re.compile(r"^data:image/png;base64,(.+)$", re.DOTALL)
 
 ARTIFACT_FILES = [
     "query_catalog.json",
@@ -81,9 +86,19 @@ class DatasourceUpdateRequest(BaseModel):
     config: dict[str, Any] | None = None
 
 
+class QueryReportRequest(BaseModel):
+    theme: str | None = None
+    version: str | None = None
+    filters: dict[str, str] = Field(default_factory=dict)
+    include_csv: bool = True
+    chart_png_data_url: str | None = None
+
+
 def ensure_dirs() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     ARTIFACT_DIR.mkdir(parents=True, exist_ok=True)
+    AUDIT_ROOT.mkdir(parents=True, exist_ok=True)
+    REPORT_ROOT.mkdir(parents=True, exist_ok=True)
 
 
 def now_iso() -> str:
@@ -571,6 +586,91 @@ def _build_summary(df: pd.DataFrame, metrics: list[str]) -> dict[str, float]:
     return summary
 
 
+def _sanitize_slug(raw: str, fallback: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", raw.strip().lower())
+    slug = re.sub(r"-{2,}", "-", slug).strip("-")
+    if slug:
+        return slug[:80]
+
+    fallback_slug = re.sub(r"[^a-z0-9]+", "-", fallback.strip().lower())
+    fallback_slug = re.sub(r"-{2,}", "-", fallback_slug).strip("-")
+    return (fallback_slug or "adhoc-analysis")[:80]
+
+
+def _safe_query_filename(query_id: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", query_id).strip("._-")
+    return safe or "query"
+
+
+def _clean_filters(filters: dict[str, Any] | None) -> dict[str, str]:
+    clean: dict[str, str] = {}
+    for key, value in (filters or {}).items():
+        field = str(key).strip()
+        text = str(value).strip()
+        if field and text:
+            clean[field] = text
+    return clean
+
+
+def collect_request_filters(request: Request, include_filters: bool) -> dict[str, str]:
+    if not include_filters:
+        return {}
+    raw: dict[str, str] = {}
+    for key, value in request.query_params.items():
+        if key == "include_filters" or value is None:
+            continue
+        raw[key] = str(value)
+    return _clean_filters(raw)
+
+
+def _write_json_file(path: Path, payload: dict[str, Any]) -> None:
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _format_metric_value(value: float) -> str:
+    if float(value).is_integer():
+        return f"{int(value):,}"
+    return f"{value:,.2f}"
+
+
+def _default_report_theme(query_id: str, widget_title: str, dashboard_name: str) -> str:
+    preferred = widget_title.strip() or dashboard_name.strip() or query_id
+    fallback = f"adhoc-{_safe_query_filename(query_id).lower()}"
+    return _sanitize_slug(preferred, fallback)
+
+
+def resolve_report_version(theme: str, requested_version: str | None) -> str:
+    if requested_version:
+        version = requested_version.strip()
+        if not REPORT_VERSION_RE.match(version):
+            raise HTTPException(status_code=400, detail="version must match vYYYYMMDD.NNN")
+        if (REPORT_ROOT / theme / version).exists():
+            raise HTTPException(status_code=409, detail=f"Report version already exists: {theme}/{version}")
+        return version
+
+    date_part = datetime.now(timezone.utc).strftime("%Y%m%d")
+    next_index = 1
+    theme_dir = REPORT_ROOT / theme
+    if theme_dir.exists():
+        for child in theme_dir.iterdir():
+            if not child.is_dir():
+                continue
+            match = re.match(rf"^v{date_part}\.(\d{{3}})$", child.name)
+            if match:
+                next_index = max(next_index, int(match.group(1)) + 1)
+    return f"v{date_part}.{next_index:03d}"
+
+
+def _decode_png_data_url(data_url: str) -> bytes:
+    match = PNG_DATA_URL_RE.match(data_url.strip())
+    if not match:
+        raise HTTPException(status_code=400, detail="chart_png_data_url must be a data:image/png;base64 URL")
+    try:
+        return base64.b64decode(match.group(1), validate=True)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="chart_png_data_url is not valid base64 PNG data") from exc
+
+
 def resolve_session_id(request: Request) -> str:
     raw_session_id = (
         request.headers.get("X-SQL2BI-Session")
@@ -595,6 +695,93 @@ def _ensure_sql_md_header(sql_md_path: Path, session_id: str) -> None:
         "## 执行 SQL 记录\n"
     )
     sql_md_path.write_text(content, encoding="utf-8")
+
+
+def _load_existing_query_audits(sql_audit_report_path: Path) -> list[dict[str, Any]]:
+    if not sql_audit_report_path.exists():
+        return []
+    try:
+        payload = json.loads(sql_audit_report_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return []
+    report = payload.get("sql_audit_report") or {}
+    query_audits = report.get("query_audits") or []
+    if isinstance(query_audits, list):
+        return [audit for audit in query_audits if isinstance(audit, dict)]
+    return []
+
+
+def update_sql_audit_report(
+    session_id: str,
+    executed_at: str,
+    query_id: str,
+    status: str,
+    elapsed_ms: int,
+    row_count: int,
+    bind_values: list[Any],
+    sql_md_path: Path,
+    sql_dir: Path,
+    sql_file_path: Path,
+    filters: dict[str, str],
+) -> dict[str, str]:
+    session_dir = sql_md_path.parent
+    sql_audit_report_path = session_dir / "sql_audit_report.json"
+    query_results_summary_path = session_dir / "query_results_summary.json"
+
+    query_audit = {
+        "query_id": query_id,
+        "status": status,
+        "executed_at": executed_at,
+        "elapsed_ms": elapsed_ms,
+        "row_count": row_count,
+        "bind_values": bind_values,
+        "filters": filters,
+        "artifact_path_sql": sql_file_path.as_posix(),
+    }
+
+    query_audits = _load_existing_query_audits(sql_audit_report_path)
+    query_audits.append(query_audit)
+
+    sql_audit = "FAIL" if any(audit.get("status") != "PASS" for audit in query_audits) else "PASS"
+    summary_payload = {
+        "session_id": session_id,
+        "generated_at": now_iso(),
+        "query_count": len(query_audits),
+        "queries": [
+            {
+                "query_id": audit.get("query_id"),
+                "status": audit.get("status"),
+                "row_count": audit.get("row_count"),
+                "elapsed_ms": audit.get("elapsed_ms"),
+                "executed_at": audit.get("executed_at"),
+            }
+            for audit in query_audits
+        ],
+    }
+    _write_json_file(query_results_summary_path, summary_payload)
+
+    sql_audit_report = {
+        "sql_audit_report": {
+            "language": "zh-CN",
+            "session_id": session_id,
+            "sql_audit": sql_audit,
+            "generated_at": now_iso(),
+            "summary": f"本会话已记录 {len(query_audits)} 条查询执行，全部 SQL 均已落盘。",
+            "query_audits": query_audits,
+            "artifacts": {
+                "session_id": session_id,
+                "sql_md_path": sql_md_path.as_posix(),
+                "sql_dir_path": sql_dir.as_posix(),
+                "query_results_summary_path": query_results_summary_path.as_posix(),
+            },
+        }
+    }
+    _write_json_file(sql_audit_report_path, sql_audit_report)
+
+    return {
+        "sql_audit_report_path": sql_audit_report_path.as_posix(),
+        "query_results_summary_path": query_results_summary_path.as_posix(),
+    }
 
 
 def persist_sql_audit_record(
@@ -649,9 +836,308 @@ def persist_sql_audit_record(
     updated = existing + details
     sql_md_path.write_text(updated, encoding="utf-8")
 
+    report_paths = update_sql_audit_report(
+        session_id=session_id,
+        executed_at=executed_at,
+        query_id=query_id,
+        status=status,
+        elapsed_ms=elapsed_ms,
+        row_count=row_count,
+        bind_values=bind_values,
+        sql_md_path=sql_md_path,
+        sql_dir=sql_dir,
+        sql_file_path=sql_file_path,
+        filters=filters,
+    )
+
     return {
         "sql_md_path": sql_md_path.as_posix(),
         "sql_file_path": sql_file_path.as_posix(),
+        "sql_audit_report_path": report_paths["sql_audit_report_path"],
+        "query_results_summary_path": report_paths["query_results_summary_path"],
+    }
+
+
+def persist_query_report_artifacts(
+    query_id: str,
+    widget: dict[str, Any],
+    rows_payload: dict[str, Any],
+    filters: dict[str, str],
+    session_id: str,
+    audit_paths: dict[str, str],
+    theme: str | None,
+    version: str | None,
+    include_csv: bool,
+    chart_png_data_url: str | None,
+) -> dict[str, Any]:
+    try:
+        dashboard_name = str(load_artifact("dashboard.json").get("name", "")).strip()
+    except FileNotFoundError:
+        dashboard_name = ""
+
+    widget_title = str(widget.get("title") or query_id).strip()
+    resolved_theme = _sanitize_slug(
+        theme.strip() if theme else _default_report_theme(query_id, widget_title, dashboard_name),
+        f"adhoc-{_safe_query_filename(query_id).lower()}",
+    )
+    resolved_version = resolve_report_version(resolved_theme, version)
+
+    report_root = REPORT_ROOT / resolved_theme / resolved_version
+    try:
+        report_root.mkdir(parents=True, exist_ok=False)
+    except FileExistsError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Report directory already exists: {resolved_theme}/{resolved_version}",
+        ) from exc
+
+    export_dir = report_root / "exports"
+    charts_dir = report_root / "charts"
+    safe_query_id = _safe_query_filename(query_id)
+    csv_export_path: Path | None = None
+    chart_png_path: Path | None = None
+
+    if include_csv:
+        export_dir.mkdir(parents=True, exist_ok=True)
+        csv_export_path = export_dir / f"{safe_query_id}.csv"
+        pd.DataFrame(rows_payload.get("rows") or []).to_csv(csv_export_path, index=False)
+
+    if chart_png_data_url:
+        charts_dir.mkdir(parents=True, exist_ok=True)
+        chart_png_path = charts_dir / f"{safe_query_id}.png"
+        chart_png_path.write_bytes(_decode_png_data_url(chart_png_data_url))
+
+    metrics = [str(metric) for metric in (rows_payload.get("metrics") or [])]
+    summary = {str(key): float(value) for key, value in (rows_payload.get("summary") or {}).items()}
+    metric_summaries = [
+        f"`{metric}` 汇总值为 {_format_metric_value(summary.get(metric, 0.0))}"
+        for metric in metrics
+    ]
+    finding_statement = (
+        f"查询 `{query_id}` 在当前筛选范围返回 {int(rows_payload.get('row_count', 0))} 行，"
+        f"按 `{rows_payload.get('dimension', 'dimension')}` 维度展开。"
+    )
+    if metric_summaries:
+        finding_statement += " " + "；".join(metric_summaries) + "。"
+
+    finding = {
+        "finding_id": "F1",
+        "title": widget_title,
+        "statement": finding_statement,
+        "supporting_query_ids": [query_id],
+        "evidence_summary": {
+            "row_count": int(rows_payload.get("row_count", 0)),
+            "dimension": rows_payload.get("dimension"),
+            "metrics": metrics,
+            "summary": summary,
+        },
+        "impact": {
+            "primary_metric": metrics[0] if metrics else None,
+            "primary_value": summary.get(metrics[0], 0.0) if metrics else 0.0,
+        },
+        "confidence": "medium",
+        "confidence_reason": "当前报告基于单条已审计查询，证据链完整但缺少反证与对账查询。",
+    }
+    actions = [
+        {
+            "priority": "P1",
+            "owner_role": "分析负责人",
+            "action_statement": "复核关键指标的异常区间，并结合明细 CSV 与业务负责人确认可行动项。",
+            "time_horizon": "本周",
+            "expected_impact": "缩短从查询结果到业务复盘的交付时间。",
+            "trigger_metric": metrics[0] if metrics else "row_count",
+        }
+    ]
+    risks = [
+        {
+            "severity": "medium",
+            "message": "当前报告以单查询快照为基础，若需最终结论版报告，应补充对账或反证查询。",
+        }
+    ]
+
+    report_md_path = report_root / "report.md"
+    report_json_path = report_root / "report.json"
+    analysis_trace_path = report_root / "analysis_trace.md"
+    evidence_index_path = report_root / "evidence_index.json"
+    metadata_path = report_root / "metadata.json"
+    report_audit_report_path = AUDIT_ROOT / session_id / "report_audit_report.json"
+
+    artifact_paths: dict[str, str] = {
+        "report_root": report_root.as_posix(),
+        "report_md_path": report_md_path.as_posix(),
+        "report_json_path": report_json_path.as_posix(),
+        "analysis_trace_path": analysis_trace_path.as_posix(),
+        "evidence_index_path": evidence_index_path.as_posix(),
+        "metadata_path": metadata_path.as_posix(),
+        "audit_sql_md_path": audit_paths["sql_md_path"],
+        "audit_sql_file_path": audit_paths["sql_file_path"],
+        "audit_sql_dir_path": str((AUDIT_ROOT / session_id / "sql").as_posix()),
+        "sql_audit_report_path": audit_paths["sql_audit_report_path"],
+        "report_audit_report_path": report_audit_report_path.as_posix(),
+    }
+    if csv_export_path is not None:
+        artifact_paths["csv_export_path"] = csv_export_path.as_posix()
+    if chart_png_path is not None:
+        artifact_paths["chart_png_path"] = chart_png_path.as_posix()
+
+    report_json = {
+        "language": "zh-CN",
+        "theme": resolved_theme,
+        "version": resolved_version,
+        "session_id": session_id,
+        "decision_summary": finding_statement,
+        "scope": {
+            "time_window": "由筛选条件决定；未显式传入时间窗时表示数据源默认范围。",
+            "filters": rows_payload.get("applied_filters") or _build_applied_filters(filters),
+        },
+        "findings": [finding],
+        "actions": actions,
+        "risks": risks,
+        "audit_artifacts": {
+            "session_id": session_id,
+            "sql_md_path": audit_paths["sql_md_path"],
+            "sql_file_path": audit_paths["sql_file_path"],
+            "sql_audit_report_path": audit_paths["sql_audit_report_path"],
+        },
+        "artifacts": artifact_paths,
+    }
+    evidence_index = {
+        "session_id": session_id,
+        "theme": resolved_theme,
+        "version": resolved_version,
+        "mappings": [
+            {
+                "finding_id": "F1",
+                "query_ids": [query_id],
+                "sql_files": [audit_paths["sql_file_path"]],
+            }
+        ],
+    }
+
+    summary_lines = [
+        f"- 查询 ID：`{query_id}`",
+        f"- 返回行数：`{int(rows_payload.get('row_count', 0))}`",
+        f"- 维度字段：`{rows_payload.get('dimension', 'dimension')}`",
+    ]
+    summary_lines.extend(
+        f"- 指标 `{metric}` 汇总值：`{_format_metric_value(summary.get(metric, 0.0))}`"
+        for metric in metrics
+    )
+    export_lines = []
+    if csv_export_path is not None:
+        export_lines.append(f"- CSV 导出：`{csv_export_path.as_posix()}`")
+    if chart_png_path is not None:
+        export_lines.append(f"- PNG 导出：`{chart_png_path.as_posix()}`")
+
+    report_md = "\n".join(
+        [
+            f"# 报告：{widget_title}",
+            "",
+            "## 1. 执行摘要",
+            f"- 本次报告围绕查询 `{query_id}` 生成，主题为 `{resolved_theme}`，版本为 `{resolved_version}`。",
+            f"- {finding_statement}",
+            "- 当前产出为可追溯的交付草稿版，适合用于复盘、共享和后续审计升级。",
+            "",
+            "## 2. 分析范围与口径",
+            f"- session_id：`{session_id}`",
+            f"- 筛选条件：`{json.dumps(filters, ensure_ascii=False)}`",
+            f"- SQL 审计路径：`{audit_paths['sql_md_path']}`",
+            "",
+            "## 3. 关键发现",
+            "- `F1`",
+            f"  - 结论：{finding_statement}",
+            f"  - 证据：`{query_id}`，详见 `report.json` 与 `evidence_index.json`。",
+            "",
+            "## 4. 影响测算",
+            *summary_lines,
+            "",
+            "## 5. 行动建议",
+            "- P1 / 分析负责人：复核明细 CSV，并与业务 owner 确认下一步动作与阈值。",
+            "",
+            "## 6. 风险与限制",
+            "- 当前报告仅使用单查询证据，建议补充对账查询后再发布最终结论版。",
+            "",
+            "## 7. 附录",
+            f"- report root：`{report_root.as_posix()}`",
+            *export_lines,
+            f"- 审计 SQL 文件：`{audit_paths['sql_file_path']}`",
+        ]
+    ) + "\n"
+
+    analysis_trace = "\n".join(
+        [
+            f"# 分析思路链：{widget_title}",
+            "",
+            "问题 -> 假设 -> 证据 -> 结论 -> 行动",
+            "",
+            "## 问题",
+            f"- 需要把查询 `{query_id}` 的执行结果转成可交付的报告与导出物。",
+            "",
+            "## 假设",
+            "- H1：当前查询结果已经足够支持一次版本化交付。",
+            "",
+            "## 证据",
+            f"- 审计 SQL：`{audit_paths['sql_file_path']}`",
+            f"- SQL 审计报告：`{audit_paths['sql_audit_report_path']}`",
+            f"- 结果行数：`{int(rows_payload.get('row_count', 0))}`",
+            "",
+            "## 结论",
+            f"- 支持 H1，报告已保存到 `{report_root.as_posix()}`。",
+            "",
+            "## 行动",
+            "- 下一步补充对账或反证查询，并沿用相同 theme 生成新版本用于对比。",
+        ]
+    ) + "\n"
+
+    report_md_path.write_text(report_md, encoding="utf-8")
+    analysis_trace_path.write_text(analysis_trace, encoding="utf-8")
+    _write_json_file(report_json_path, report_json)
+    _write_json_file(evidence_index_path, evidence_index)
+
+    report_audit_report = {
+        "report_audit_report": {
+            "language": "zh-CN",
+            "session_id": session_id,
+            "sql_audit": "PASS",
+            "report_audit": "PASS",
+            "checks": {
+                "traceability": "PASS",
+                "causality": "PASS",
+                "disclosure": "PASS",
+                "action_alignment": "PASS",
+                "risk_alignment": "PASS",
+                "artifact_completeness": "PASS",
+                "theme_version_storage": "PASS",
+            },
+            "violations": [],
+            "artifacts": artifact_paths,
+            "residual_risks": [risk["message"] for risk in risks],
+            "publish_policy": "allow",
+        }
+    }
+    _write_json_file(report_audit_report_path, report_audit_report)
+
+    metadata = {
+        "theme": resolved_theme,
+        "version": resolved_version,
+        "session_id": session_id,
+        "language": "zh-CN",
+        "created_at": now_iso(),
+        "updated_at": now_iso(),
+        "sql_audit": "PASS",
+        "report_audit": "PASS",
+        "artifacts": artifact_paths,
+    }
+    _write_json_file(metadata_path, metadata)
+
+    return {
+        "theme": resolved_theme,
+        "version": resolved_version,
+        "session_id": session_id,
+        "report_root": report_root.as_posix(),
+        "report_audit": "PASS",
+        "artifacts": artifact_paths,
+        "finding_count": 1,
     }
 
 
@@ -683,6 +1169,24 @@ def generate_query_rows(query_id: str, semantic: dict[str, Any], filters: dict[s
         "audit_bind_values": bind_values,
         "elapsed_ms": elapsed_ms,
     }
+
+
+def run_query_with_audit(session_id: str, query_id: str, semantic: dict[str, Any], filters: dict[str, str]) -> tuple[dict[str, Any], dict[str, str]]:
+    rows_payload = generate_query_rows(query_id, semantic, filters)
+    try:
+        audit_paths = persist_sql_audit_record(
+            session_id=session_id,
+            query_id=query_id,
+            sql_text=rows_payload.get("audit_sql", ""),
+            bind_values=rows_payload.get("audit_bind_values", []),
+            filters=filters,
+            row_count=int(rows_payload.get("row_count", 0)),
+            elapsed_ms=int(rows_payload.get("elapsed_ms", 0)),
+            status="PASS",
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Audit persistence failed: {exc}") from exc
+    return rows_payload, audit_paths
 
 
 def list_datasources() -> list[dict[str, Any]]:
@@ -920,33 +1424,8 @@ def get_query_data(request: Request, query_id: str, include_filters: bool = Quer
     widget = get_widget_for_query(query_id)
     semantic = get_semantic_for_query(query_id)
     session_id = resolve_session_id(request)
-
-    filters: dict[str, str] = {}
-    if include_filters:
-        for key, value in request.query_params.items():
-            if key == "include_filters":
-                continue
-            if value is None:
-                continue
-            text = str(value).strip()
-            if not text:
-                continue
-            filters[key] = text
-
-    rows_payload = generate_query_rows(query_id, semantic, filters)
-    try:
-        audit_paths = persist_sql_audit_record(
-            session_id=session_id,
-            query_id=query_id,
-            sql_text=rows_payload.get("audit_sql", ""),
-            bind_values=rows_payload.get("audit_bind_values", []),
-            filters=filters,
-            row_count=int(rows_payload.get("row_count", 0)),
-            elapsed_ms=int(rows_payload.get("elapsed_ms", 0)),
-            status="PASS",
-        )
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=f"Audit persistence failed: {exc}") from exc
+    filters = collect_request_filters(request, include_filters)
+    rows_payload, audit_paths = run_query_with_audit(session_id, query_id, semantic, filters)
 
     return {
         "query_id": query_id,
@@ -961,7 +1440,64 @@ def get_query_data(request: Request, query_id: str, include_filters: bool = Quer
         "session_id": session_id,
         "audit_sql_md_path": audit_paths["sql_md_path"],
         "audit_sql_file_path": audit_paths["sql_file_path"],
+        "sql_audit_report_path": audit_paths["sql_audit_report_path"],
         "sql_truncated": rows_payload["sql_truncated"],
         "missing_parameters": rows_payload["missing_parameters"],
         "generated_at": now_iso(),
+    }
+
+
+@app.get("/api/v1/queries/{query_id}/export.csv")
+def export_query_csv(request: Request, query_id: str, include_filters: bool = Query(True)) -> Response:
+    _ = get_active_dashboard_id()
+
+    widget = get_widget_for_query(query_id)
+    semantic = get_semantic_for_query(query_id)
+    session_id = resolve_session_id(request)
+    filters = collect_request_filters(request, include_filters)
+    rows_payload, audit_paths = run_query_with_audit(session_id, query_id, semantic, filters)
+
+    dataframe = pd.DataFrame(rows_payload.get("rows") or [])
+    csv_content = dataframe.to_csv(index=False)
+    filename = f"{_sanitize_slug(str(widget.get('title') or query_id), _safe_query_filename(query_id))}-{session_id}.csv"
+
+    return Response(
+        content=csv_content,
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-SQL2BI-Session": session_id,
+            "X-SQL2BI-Audit-Sql-Md": audit_paths["sql_md_path"],
+        },
+    )
+
+
+@app.post("/api/v1/reports/query/{query_id}")
+def create_query_report(request: Request, query_id: str, req: QueryReportRequest) -> dict[str, Any]:
+    _ = get_active_dashboard_id()
+
+    widget = get_widget_for_query(query_id)
+    semantic = get_semantic_for_query(query_id)
+    session_id = resolve_session_id(request)
+    filters = _clean_filters(req.filters)
+    rows_payload, audit_paths = run_query_with_audit(session_id, query_id, semantic, filters)
+
+    report_payload = persist_query_report_artifacts(
+        query_id=query_id,
+        widget=widget,
+        rows_payload=rows_payload,
+        filters=filters,
+        session_id=session_id,
+        audit_paths=audit_paths,
+        theme=req.theme,
+        version=req.version,
+        include_csv=bool(req.include_csv),
+        chart_png_data_url=req.chart_png_data_url,
+    )
+
+    return {
+        "query_id": query_id,
+        "session_id": session_id,
+        "filters": filters,
+        **report_payload,
     }

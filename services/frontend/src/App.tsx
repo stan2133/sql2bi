@@ -6,12 +6,39 @@ import type {
   FilterDef,
   FilterValue,
   FiltersPayload,
+  QueryReportResponse,
   QueryDataPayload,
   WidgetSpec
 } from './types'
 
 const DEFAULT_BACKEND_URL = 'http://127.0.0.1:18000'
 const DEFAULT_SQL_MD_PATH = '/Users/lyg/software/sql2bi/sample.sql.md'
+const SESSION_STORAGE_KEY = 'sql2bi_session_id'
+
+function getOrCreateSessionId(): string {
+  const existing = localStorage.getItem(SESSION_STORAGE_KEY)
+  if (existing) return existing
+
+  const generated = `ui_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`
+  localStorage.setItem(SESSION_STORAGE_KEY, generated)
+  return generated
+}
+
+function slugifyTheme(value: string): string {
+  const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/-{2,}/g, '-').replace(/^-|-$/g, '')
+  return slug || 'adhoc-analysis'
+}
+
+function triggerDownload(blob: Blob, filename: string): void {
+  const url = URL.createObjectURL(blob)
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = filename
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  URL.revokeObjectURL(url)
+}
 
 type WidgetCardProps = {
   widget: WidgetSpec
@@ -19,6 +46,7 @@ type WidgetCardProps = {
   active: boolean
   onClick: () => void
   onCrossFilter: (value: string) => void
+  onRegisterPngExporter: (exporter: (() => string | null) | null) => void
 }
 
 function optionForPayload(payload: QueryDataPayload): echarts.EChartsOption | null {
@@ -95,7 +123,7 @@ function optionForPayload(payload: QueryDataPayload): echarts.EChartsOption | nu
   return null
 }
 
-function WidgetCard({ widget, payload, active, onClick, onCrossFilter }: WidgetCardProps) {
+function WidgetCard({ widget, payload, active, onClick, onCrossFilter, onRegisterPngExporter }: WidgetCardProps) {
   const chartRef = useRef<HTMLDivElement | null>(null)
   const echartsRef = useRef<echarts.ECharts | null>(null)
 
@@ -106,11 +134,15 @@ function WidgetCard({ widget, payload, active, onClick, onCrossFilter }: WidgetC
         echartsRef.current.dispose()
         echartsRef.current = null
       }
+      onRegisterPngExporter(null)
       return
     }
 
     const node = chartRef.current
-    if (!node || !payload) return
+    if (!node || !payload) {
+      onRegisterPngExporter(null)
+      return
+    }
 
     if (!echartsRef.current) {
       echartsRef.current = echarts.init(node)
@@ -126,6 +158,11 @@ function WidgetCard({ widget, payload, active, onClick, onCrossFilter }: WidgetC
     if (option) {
       echartsRef.current.setOption(option, true)
       echartsRef.current.resize()
+      onRegisterPngExporter(() => echartsRef.current?.getDataURL({
+        type: 'png',
+        pixelRatio: 2,
+        backgroundColor: '#ffffff'
+      }) || null)
     }
 
     const onResize = () => {
@@ -135,16 +172,17 @@ function WidgetCard({ widget, payload, active, onClick, onCrossFilter }: WidgetC
     return () => {
       window.removeEventListener('resize', onResize)
     }
-  }, [widget.chart, payload, onCrossFilter])
+  }, [widget.chart, payload, onCrossFilter, onRegisterPngExporter])
 
   useEffect(() => {
     return () => {
+      onRegisterPngExporter(null)
       if (echartsRef.current) {
         echartsRef.current.dispose()
         echartsRef.current = null
       }
     }
-  }, [])
+  }, [onRegisterPngExporter])
 
   const rows = payload?.rows || []
   const chartType = (widget.chart || 'table').toLowerCase()
@@ -214,6 +252,7 @@ function normalizeFilter(def: FilterDef, raw: string): FilterValue {
 }
 
 function App() {
+  const [sessionId] = useState<string>(() => getOrCreateSessionId())
   const [backendUrl, setBackendUrl] = useState<string>(
     localStorage.getItem('sql2bi_backend') || DEFAULT_BACKEND_URL
   )
@@ -226,11 +265,32 @@ function App() {
   const [selectedQueryId, setSelectedQueryId] = useState<string | null>(null)
   const [loading, setLoading] = useState<boolean>(false)
   const [error, setError] = useState<string>('')
+  const [reportTheme, setReportTheme] = useState<string>('adhoc-analysis')
+  const [actionMessage, setActionMessage] = useState<string>('')
+  const [reportResult, setReportResult] = useState<QueryReportResponse | null>(null)
+  const [exporting, setExporting] = useState<boolean>(false)
+  const pngExportersRef = useRef<Record<string, () => string | null>>({})
 
-  const api = useMemo(() => new Sql2BiApi(backendUrl), [backendUrl])
+  const api = useMemo(() => new Sql2BiApi(backendUrl, sessionId), [backendUrl, sessionId])
 
   const currentPage = dashboard?.pages?.[0]
   const widgets = currentPage?.widgets || []
+  const buildMergedFilters = useCallback((queryId: string): Record<string, string> => {
+    const merged: Record<string, string> = {}
+
+    Object.entries(globalFilterValues).forEach(([field, value]) => {
+      const serialized = serializeFilterValue(value)
+      if (serialized) merged[field] = serialized
+    })
+
+    const local = worksheetFilterValues[queryId] || {}
+    Object.entries(local).forEach(([field, value]) => {
+      const serialized = serializeFilterValue(value)
+      if (serialized) merged[field] = serialized
+    })
+
+    return merged
+  }, [globalFilterValues, worksheetFilterValues])
 
   const loadDashboard = useCallback(async () => {
     setLoading(true)
@@ -255,20 +315,7 @@ function App() {
     try {
       const entries = await Promise.all(
         currentPage.widgets.map(async (w) => {
-          const merged: Record<string, string> = {}
-
-          Object.entries(globalFilterValues).forEach(([field, value]) => {
-            const serialized = serializeFilterValue(value)
-            if (serialized) merged[field] = serialized
-          })
-
-          const local = worksheetFilterValues[w.query_id] || {}
-          Object.entries(local).forEach(([field, value]) => {
-            const serialized = serializeFilterValue(value)
-            if (serialized) merged[field] = serialized
-          })
-
-          const payload = await api.queryData(w.query_id, merged)
+          const payload = await api.queryData(w.query_id, buildMergedFilters(w.query_id))
           return [w.query_id, payload] as const
         })
       )
@@ -281,7 +328,7 @@ function App() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
     }
-  }, [api, currentPage, globalFilterValues, worksheetFilterValues])
+  }, [api, buildMergedFilters, currentPage])
 
   useEffect(() => {
     loadDashboard().catch(() => {
@@ -311,6 +358,72 @@ function App() {
 
   const selectedWidget = widgets.find((w) => w.query_id === selectedQueryId) || null
   const worksheetFilters = selectedQueryId ? (filtersPayload.widget_filters[selectedQueryId] || []) : []
+
+  useEffect(() => {
+    const nextTheme = slugifyTheme(selectedWidget?.title || dashboard?.name || 'adhoc-analysis')
+    setReportTheme(nextTheme)
+  }, [dashboard?.name, selectedWidget?.title, selectedWidget?.query_id])
+
+  const downloadSelectedCsv = useCallback(async () => {
+    if (!selectedWidget) return
+
+    setExporting(true)
+    setActionMessage('')
+    try {
+      const filters = buildMergedFilters(selectedWidget.query_id)
+      const blob = await api.exportCsv(selectedWidget.query_id, filters)
+      triggerDownload(blob, `${slugifyTheme(selectedWidget.title || selectedWidget.query_id)}-${sessionId}.csv`)
+      setActionMessage(`CSV 已下载，session=${sessionId}`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setExporting(false)
+    }
+  }, [api, buildMergedFilters, selectedWidget, sessionId])
+
+  const downloadSelectedPng = useCallback(() => {
+    if (!selectedWidget) return
+    const exporter = pngExportersRef.current[selectedWidget.query_id]
+    const dataUrl = exporter?.()
+    if (!dataUrl) {
+      setError('当前 widget 没有可导出的图表 PNG')
+      return
+    }
+
+    fetch(dataUrl)
+      .then((res) => res.blob())
+      .then((blob) => {
+        triggerDownload(blob, `${slugifyTheme(selectedWidget.title || selectedWidget.query_id)}-${sessionId}.png`)
+        setActionMessage(`PNG 已下载，session=${sessionId}`)
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : String(err))
+      })
+  }, [selectedWidget, sessionId])
+
+  const generateSelectedReport = useCallback(async () => {
+    if (!selectedWidget) return
+
+    setExporting(true)
+    setActionMessage('')
+    setError('')
+    try {
+      const filters = buildMergedFilters(selectedWidget.query_id)
+      const chartPngDataUrl = pngExportersRef.current[selectedWidget.query_id]?.() || undefined
+      const response = await api.createQueryReport(selectedWidget.query_id, {
+        theme: reportTheme,
+        filters,
+        include_csv: true,
+        chart_png_data_url: chartPngDataUrl
+      })
+      setReportResult(response)
+      setActionMessage(`报告已生成到 ${response.report_root}`)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setExporting(false)
+    }
+  }, [api, buildMergedFilters, reportTheme, selectedWidget])
 
   return (
     <div className="app-root">
@@ -360,6 +473,8 @@ function App() {
             <div className="subline">
               {widgets.length} widgets
               {loading ? ' | loading...' : ''}
+              {exporting ? ' | exporting...' : ''}
+              {sessionId ? ` | session: ${sessionId}` : ''}
               {error ? ` | error: ${error}` : ''}
             </div>
           </div>
@@ -376,6 +491,13 @@ function App() {
                   if (!target) return
                   setGlobalFilterValues((prev) => ({ ...prev, [target.field]: value }))
                 }}
+                onRegisterPngExporter={(exporter) => {
+                  if (exporter) {
+                    pngExportersRef.current[w.query_id] = exporter
+                  } else {
+                    delete pngExportersRef.current[w.query_id]
+                  }
+                }}
               />
             ))}
           </section>
@@ -386,6 +508,29 @@ function App() {
           {selectedWidget ? (
             <>
               <div className="worksheet-title">{selectedWidget.title || selectedWidget.query_id}</div>
+              <div className="session-chip">session: {sessionId}</div>
+              <div className="export-card">
+                <label>Report Theme</label>
+                <input value={reportTheme} onChange={(e) => setReportTheme(slugifyTheme(e.target.value))} />
+                <div className="export-actions">
+                  <button onClick={downloadSelectedCsv} disabled={exporting}>Download CSV</button>
+                  <button
+                    onClick={downloadSelectedPng}
+                    disabled={exporting || (selectedWidget.chart || 'table').toLowerCase() === 'table'}
+                  >
+                    Download PNG
+                  </button>
+                  <button onClick={generateSelectedReport} disabled={exporting}>Generate Report</button>
+                </div>
+                {actionMessage ? <div className="hint">{actionMessage}</div> : null}
+                {reportResult && reportResult.query_id === selectedWidget.query_id ? (
+                  <div className="report-meta">
+                    <div><strong>theme</strong>: {reportResult.theme}</div>
+                    <div><strong>version</strong>: {reportResult.version}</div>
+                    <div><strong>root</strong>: {reportResult.report_root}</div>
+                  </div>
+                ) : null}
+              </div>
               {worksheetFilters.length === 0 ? <div className="hint">No worksheet filters</div> : null}
               {worksheetFilters.map((f) => {
                 const current = worksheetFilterValues[selectedWidget.query_id]?.[f.field] ?? null

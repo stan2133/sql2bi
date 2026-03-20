@@ -57,6 +57,21 @@ def _http_json(
         return int(exc.code), parsed
 
 
+def _http_raw(
+    method: str,
+    url: str,
+    *,
+    headers: dict[str, str] | None = None,
+    timeout: float = 20.0,
+) -> tuple[int, bytes, dict[str, str]]:
+    req = urllib.request.Request(url=url, method=method, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return int(resp.status), resp.read(), dict(resp.headers.items())
+    except urllib.error.HTTPError as exc:
+        return int(exc.code), exc.read(), dict(exc.headers.items())
+
+
 class BackendAuditIntegrationTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
@@ -183,6 +198,73 @@ class BackendAuditIntegrationTest(unittest.TestCase):
         self.assertEqual(status, 400, data)
         detail = str(data.get("detail", ""))
         self.assertIn("Only read-only SELECT/WITH/EXPLAIN SQL is allowed", detail)
+
+    def test_export_csv_and_generate_versioned_report(self) -> None:
+        status, imported = _http_json(
+            "POST",
+            f"{self.base_url}/api/v1/import/sql-md",
+            payload={"sql_md_path": str(SAMPLE_SQL_MD)},
+        )
+        self.assertEqual(status, 200, imported)
+
+        query_catalog = json.loads(QUERY_CATALOG_PATH.read_text(encoding="utf-8"))
+        candidate = next((q for q in query_catalog.get("queries", []) if not q.get("datasource")), None)
+        if candidate is None:
+            candidate = (query_catalog.get("queries") or [{}])[0]
+        query_id = str(candidate.get("id", "")).strip()
+        self.assertTrue(query_id, "query id should not be empty")
+
+        session_id = f"it_report_{uuid.uuid4().hex[:10]}"
+        status, body, headers = _http_raw(
+            "GET",
+            f"{self.base_url}/api/v1/queries/{query_id}/export.csv",
+            headers={"X-SQL2BI-Session": session_id},
+        )
+        self.assertEqual(status, 200, body.decode("utf-8", errors="replace"))
+        csv_text = body.decode("utf-8")
+        self.assertGreaterEqual(len([line for line in csv_text.splitlines() if line.strip()]), 2)
+
+        theme = f"it-report-{uuid.uuid4().hex[:8]}"
+        status, report = _http_json(
+            "POST",
+            f"{self.base_url}/api/v1/reports/query/{query_id}",
+            payload={"theme": theme, "filters": {}, "include_csv": True},
+            headers={"X-SQL2BI-Session": session_id},
+        )
+        self.assertEqual(status, 200, report)
+        self.assertEqual(report.get("theme"), theme)
+        self.assertRegex(str(report.get("version", "")), r"^v\d{8}\.\d{3}$")
+
+        artifacts = report.get("artifacts") or {}
+        required_paths = [
+            "report_md_path",
+            "report_json_path",
+            "analysis_trace_path",
+            "evidence_index_path",
+            "metadata_path",
+            "csv_export_path",
+            "sql_audit_report_path",
+            "report_audit_report_path",
+            "audit_sql_md_path",
+            "audit_sql_file_path",
+        ]
+        for key in required_paths:
+            path = Path(str(artifacts.get(key, "")))
+            self.assertTrue(path.exists(), f"missing artifact for {key}: {path}")
+
+        report_md_text = Path(str(artifacts["report_md_path"])).read_text(encoding="utf-8")
+        self.assertIn("## 1. 执行摘要", report_md_text)
+        self.assertIn(f"`{query_id}`", report_md_text)
+
+        metadata = json.loads(Path(str(artifacts["metadata_path"])).read_text(encoding="utf-8"))
+        self.assertEqual(metadata.get("theme"), theme)
+        self.assertEqual(metadata.get("session_id"), session_id)
+        self.assertEqual(metadata.get("artifacts", {}).get("audit_sql_md_path"), artifacts.get("audit_sql_md_path"))
+
+        evidence_index = json.loads(Path(str(artifacts["evidence_index_path"])).read_text(encoding="utf-8"))
+        mappings = evidence_index.get("mappings") or []
+        self.assertEqual(len(mappings), 1)
+        self.assertEqual(mappings[0].get("query_ids"), [query_id])
 
 
 if __name__ == "__main__":

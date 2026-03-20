@@ -53,6 +53,12 @@ export type QueryDataPayload = {
   row_count: number
   applied_filters: Array<{ field: string; mode: string; value: string }>
   summary: Record<string, number>
+  session_id: string
+  audit_sql_md_path: string
+  audit_sql_file_path: string
+  sql_audit_report_path?: string
+  sql_truncated: boolean
+  missing_parameters: string[]
   generated_at: string
 }
 
@@ -65,3 +71,15 @@ export type ImportResponse = {
 }
 
 export type FilterValue = string | string[] | { from: string; to: string } | null
+
+export type QueryReportResponse = {
+  query_id: string
+  session_id: string
+  filters: Record<string, string>
+  theme: string
+  version: string
+  report_root: string
+  report_audit: string
+  finding_count: number
+  artifacts: Record<string, string>
+}
